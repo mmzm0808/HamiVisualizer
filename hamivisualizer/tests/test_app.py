@@ -692,6 +692,57 @@ def test_triangle_scene_has_a_clear_physical_shape_badge():
     assert not (badges[0].flags() & QGraphicsItem.ItemIsMovable)
 
 
+def test_nontriangular_scene_outlines_enclose_every_rendered_basis_site():
+    """Disk/hexagon outlines must include multi-site basis overhangs."""
+    _app, win, ctrl = _mk()
+    for template_name in (
+        "NP", "SC", "空白自定义", "方格", "一维链", "蜂窝", "三角",
+        "Kagome", "SSH", "Haldane",
+    ):
+        for shape in ("disk", "hexagon"):
+            ctrl.apply_document(template_document(
+                template_name, connectivity="最近邻", boundary_kind="obc",
+                nx=6, ny=6, shape=shape,
+            ))
+            boundary = ctrl._build_boundary()
+            frame = boundary._physical_frame()
+            assert frame is not None, (template_name, shape)
+            _u0, _u1, _v0, _v1, ux, uy, vx, vy = frame
+
+            def project(point):
+                x, y = point
+                return x * ux + y * uy, x * vx + y * vy
+
+            sample = [project((x, y))
+                      for x, y, *_ in win.lattice_scene._data.sites]
+            outline = [project(point)
+                       for point in win.lattice_scene._data.boundary_outline]
+            center = (
+                sum(u for u, _v in outline) / len(outline),
+                sum(v for _u, v in outline) / len(outline),
+            )
+            if shape == "disk":
+                radius = max(math.hypot(u - center[0], v - center[1])
+                             for u, v in outline)
+                assert all(
+                    math.hypot(u - center[0], v - center[1]) <= radius + 1e-8
+                    for u, v in sample
+                ), (template_name, shape)
+            else:
+                sqrt3 = math.sqrt(3.0)
+                radius = max(
+                    max(2.0 * abs(v - center[1]) / sqrt3,
+                        abs(u - center[0]) + abs(v - center[1]) / sqrt3)
+                    for u, v in outline
+                )
+                assert all(
+                    max(2.0 * abs(v - center[1]) / sqrt3,
+                        abs(u - center[0]) + abs(v - center[1]) / sqrt3)
+                    <= radius + 1e-8
+                    for u, v in sample
+                ), (template_name, shape)
+
+
 def test_all_presets_and_finite_shapes_build_hermitian_matrices():
     """Pure-model audit covering every shipped preset and boundary shape."""
     from hamivisualizer.model.templates import TEMPLATE_NAMES

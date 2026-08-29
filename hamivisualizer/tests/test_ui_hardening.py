@@ -2473,6 +2473,37 @@ def test_band_axis_is_fixed_physical_kx():
     assert scene._mark_item.line().x1() == pytest.approx(np.pi / 2)
 
 
+def test_all_default_finite_shapes_keep_regular_physical_outlines():
+    """Every built-in lattice gets a non-empty, metrically correct finite mask."""
+    for template_name in TEMPLATE_NAMES:
+        for shape in ("triangle", "disk", "hexagon"):
+            document = template_document(
+                template_name, nx=6, ny=6, boundary_kind="obc",
+                connectivity="最近邻", shape=shape,
+            )
+            cell = document["cell"]
+            if isinstance(cell, dict) and "a1" in cell:
+                vectors = (tuple(cell["a1"]), tuple(cell["a2"]))
+            else:
+                vectors = ((float(cell["Lx"]), 0.0),
+                           (0.0, float(cell["Ly"])))
+            boundary = Boundary(
+                BoundaryKind.OBC, NX=6, NY=6, shape=shape,
+                shape_vectors=vectors,
+            )
+            assert boundary.active_cells(), template_name
+            outline = boundary.shape_outline()
+            expected_vertices = {"triangle": 3, "disk": 96, "hexagon": 6}[shape]
+            assert len(outline) == expected_vertices, (template_name, shape)
+            side_lengths = []
+            for i, (x, y) in enumerate(outline):
+                xx, yy = outline[(i + 1) % len(outline)]
+                side_lengths.append(math.hypot(xx - x, yy - y))
+            assert max(side_lengths) - min(side_lengths) <= 1e-6, (
+                template_name, shape, side_lengths[:6]
+            )
+
+
 def test_phi_fraction_and_wavefunction_energy_selection():
     _app, win, ctrl = _window()
     row = next(r for r in range(win.panel.param_table.rowCount())

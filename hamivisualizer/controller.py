@@ -153,6 +153,76 @@ def _finite_shape_outline(lattice, boundary: Boundary, positions) -> tuple:
             (center + upper / 2.0, base_y),
             (center, apex_y),
         )
+
+    # Disk/hexagon masks are selected from cell origins, while the canvas
+    # renders every basis site inside those cells.  A multi-site basis can
+    # therefore overhang the origin-level boundary by a full bond length (the
+    # most visible example is the six-site Kagome disk).  Reusing
+    # ``Boundary.shape_outline`` here produced an outline that cut through
+    # real sites.  Fit the cosmetic outline to the actual rendered positions
+    # in the same orthonormal physical frame used by the mask.  The matrix
+    # membership is deliberately unchanged; this only makes the visible
+    # boundary honest about what is drawn.
+    shape = getattr(boundary, "shape", "rectangle")
+    if (shape in {"disk", "hexagon"}
+            and boundary.kind is BoundaryKind.OBC and positions):
+        frame_builder = getattr(boundary, "_physical_frame", None)
+        frame = frame_builder() if callable(frame_builder) else None
+        if frame is not None:
+            _u_min, _u_max, _v_min, _v_max, ux, uy, vx, vy = frame
+            projected = tuple(
+                (float(x) * ux + float(y) * uy,
+                 float(x) * vx + float(y) * vy)
+                for x, y in positions
+            )
+            u_center = 0.5 * (
+                min(u for u, _v in projected) + max(u for u, _v in projected)
+            )
+            v_center = 0.5 * (
+                min(v for _u, v in projected) + max(v for _u, v in projected)
+            )
+            span = max(
+                max(u for u, _v in projected) - min(u for u, _v in projected),
+                max(v for _u, v in projected) - min(v for _u, v in projected),
+                1.0,
+            )
+            # Keep a small clearance for the node stroke without bringing
+            # back the historical giant padding around anisotropic bases.
+            padding = max(0.04, 0.018 * span)
+            if shape == "disk":
+                radius = max(
+                    math.hypot(u - u_center, v - v_center)
+                    for u, v in projected
+                ) + padding
+                count = 96
+                return tuple(
+                    (
+                        (u_center + radius * math.cos(2.0 * math.pi * k / count)) * ux
+                        + (v_center + radius * math.sin(2.0 * math.pi * k / count)) * vx,
+                        (u_center + radius * math.cos(2.0 * math.pi * k / count)) * uy
+                        + (v_center + radius * math.sin(2.0 * math.pi * k / count)) * vy,
+                    )
+                    for k in range(count)
+                )
+
+            # Regular flat-top hexagon.  For a circumradius R in this frame,
+            # the exact half-plane metric is
+            #   R >= max(2|v|/sqrt(3), |u| + |v|/sqrt(3)).
+            sqrt3 = math.sqrt(3.0)
+            radius = max(
+                max(2.0 * abs(v - v_center) / sqrt3,
+                    abs(u - u_center) + abs(v - v_center) / sqrt3)
+                for u, v in projected
+            ) + padding
+            return tuple(
+                (
+                    (u_center + radius * math.cos(k * math.pi / 3.0)) * ux
+                    + (v_center + radius * math.sin(k * math.pi / 3.0)) * vx,
+                    (u_center + radius * math.cos(k * math.pi / 3.0)) * uy
+                    + (v_center + radius * math.sin(k * math.pi / 3.0)) * vy,
+                )
+                for k in range(6)
+            )
     return tuple(boundary.shape_outline(
         margin=_finite_shape_outline_margin(lattice, boundary),
     ))

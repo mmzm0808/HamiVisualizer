@@ -28,3 +28,6 @@ Desktop.ini
 
 # Local pytest result dumps
 .codex-artifacts/*.xml
+
+# Local image preview scratch
+.codex-artifacts/preview/

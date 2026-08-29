@@ -1,0 +1,576 @@
+"""Render deterministic off-screen UI regression screenshots.
+
+The script deliberately uses the same font setup and Fusion style as the real
+application.  It writes only to the requested output directory, so visual
+evidence stays separate from user models and settings.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from PySide6.QtCore import QPoint, QThreadPool
+from PySide6.QtWidgets import QApplication
+
+from hamivisualizer.controller import ViewController
+from hamivisualizer.main import _configure_font
+from hamivisualizer.model.templates import TEMPLATE_NAMES, template_document
+from hamivisualizer.model.boundary import (
+    SHAPE_DISK, SHAPE_HEXAGON, SHAPE_RECTANGLE, SHAPE_TRIANGLE,
+)
+from hamivisualizer.view.main_window import MainWindow, _Session
+from hamivisualizer.model.workspace import DocumentHistory, ModelSessionData
+from hamivisualizer.view.dialogs import HoppingDialog
+
+
+def _save(window: MainWindow, path: Path) -> None:
+    QApplication.processEvents()
+    pixmap = window.grab()
+    if not pixmap.save(str(path)):
+        raise OSError(f"failed to save screenshot: {path}")
+    print(f"saved {path} ({pixmap.width()}x{pixmap.height()})")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--prefix", default="ui-state")
+    parser.add_argument("--template", choices=TEMPLATE_NAMES, default="NP")
+    parser.add_argument("--nx", type=int, default=4)
+    parser.add_argument("--ny", type=int, default=4)
+    parser.add_argument("--boundary", choices=("semi", "obc"), default="semi")
+    parser.add_argument(
+        "--shape",
+        choices=(SHAPE_RECTANGLE, SHAPE_TRIANGLE, SHAPE_DISK, SHAPE_HEXAGON),
+        default=SHAPE_RECTANGLE,
+        help="OBC finite-cell mask; ignored by semi-infinite boundary",
+    )
+    parser.add_argument("--view-zoom", type=float, default=1.0)
+    parser.add_argument(
+        "--ui-scale", type=float,
+        help="仅渲染指定界面缩放比例（0.8–1.8），同时输出亮/暗主题。"
+             "未指定时保留默认的 100%% + 150%% 回归截图。",
+    )
+    parser.add_argument(
+        "--window-width", type=int, default=1440,
+        help="离屏截图窗口宽度（默认 1440；主验收图可用 1920 等更大画布）。",
+    )
+    parser.add_argument(
+        "--window-height", type=int, default=920,
+        help="离屏截图窗口高度（默认 920；主验收图可用 1200 等更大画布）。",
+    )
+    parser.add_argument(
+        "--energy", type=float,
+        help="OBC wavefunction target energy; selects the nearest eigenstate for screenshots.",
+    )
+    parser.add_argument("--edit-lattice", action="store_true")
+    parser.add_argument(
+        "--select-hop-row", type=int,
+        help="In lattice edit mode, reveal the compact editor for this hopping row.",
+    )
+    parser.add_argument(
+        "--show-all-hop-editors", action="store_true",
+        help="In lattice edit mode, intentionally render every hopping editor.",
+    )
+    parser.add_argument("--bond-ratio-demo", action="store_true")
+    parser.add_argument(
+        "--oblique-a1-demo", action="store_true",
+        help="Render a honeycomb-like edit view with a vertical a1 component.",
+    )
+    parser.add_argument(
+        "--intercell-dialog-demo", action="store_true",
+        help="Render the semantic half-infinite intercell hopping dialog.",
+    )
+    parser.add_argument(
+        "--intercell-large-offset-demo", action="store_true",
+        help="Render the custom intercell dialog with offsets beyond ±100.",
+    )
+    parser.add_argument(
+        "--intercell-menu-demo", action="store_true",
+        help="Render the compact menu for fixed and custom inter-cell hopping.",
+    )
+    parser.add_argument(
+        "--diagonal-intercell-demo", action="store_true",
+        help="Render the relation summary for a mixed dx/dy inter-cell hop.",
+    )
+    parser.add_argument(
+        "--selected-intercell-demo", action="store_true",
+        help="Render a relation-menu insertion that inherits the selected row endpoints.",
+    )
+    parser.add_argument(
+        "--matrix-selection-demo", action="store_true",
+        help="Render a non-modal matrix-cell selection highlight and status detail.",
+    )
+    parser.add_argument(
+        "--matrix-copy-demo", action="store_true",
+        help="Render the enabled Edit-menu action for copying the selected matrix element.",
+    )
+    parser.add_argument(
+        "--intercell-panel-demo", action="store_true",
+        help="Render the complete hopping panel, including explicit intra/inter-cell actions.",
+    )
+    parser.add_argument(
+        "--hop-relation-demo", action="store_true",
+        help="Render palette-tinted intra/inter-cell rows and their compact editing affordance.",
+    )
+    parser.add_argument(
+        "--restore-spacing-demo", action="store_true",
+        help="Render restoration of automatic cell spacing after a manual edit.",
+    )
+    parser.add_argument(
+        "--dense-guard-demo", action="store_true",
+        help="Render the recoverable error shown before an unsafe dense calculation.",
+    )
+    parser.add_argument(
+        "--resource-hint-demo", action="store_true",
+        help="Render the live Nx/Ny dense-resource estimate without starting a calculation.",
+    )
+    parser.add_argument(
+        "--ghost-hop-demo", action="store_true",
+        help="Render semi-infinite edit mode with periodic ghost endpoints armed for bond creation.",
+    )
+    parser.add_argument(
+        "--history-demo", action="store_true",
+        help="Create one in-memory site edit and open the Edit menu for undo-label screenshots.",
+    )
+    parser.add_argument(
+        "--connectivity", choices=("仅格点", "最近邻", "最近邻+次近邻"),
+        default="最近邻+次近邻",
+    )
+    parser.add_argument(
+        "--tab", choices=("combined", "matrix", "lattice", "band", "wavefunction"),
+        default="combined",
+    )
+    args = parser.parse_args()
+    if args.ui_scale is not None and not 0.8 <= args.ui_scale <= 1.8:
+        parser.error("--ui-scale 必须位于 0.8..1.8")
+    if args.window_width < 900 or args.window_height < 600:
+        parser.error("--window-width 至少 900，--window-height 至少 600")
+    args.output.mkdir(parents=True, exist_ok=True)
+
+    app = QApplication.instance() or QApplication([])
+    app.setStyle("Fusion")
+    _configure_font(app)
+    window = MainWindow()
+    if args.intercell_dialog_demo or args.intercell_large_offset_demo:
+        window._set_theme_mode("dark")
+        window._set_ui_scale(1.5, persist=False)
+        dialog = HoppingDialog(0, 1, window, semi=True, site_count=6)
+        custom_index = dialog.cell_relation.findData("custom")
+        if custom_index < 0:
+            raise ValueError("semantic intercell option is missing")
+        dialog.cell_relation.setCurrentIndex(custom_index)
+        # Exercise both endpoint selectors and the semantic relation row in
+        # one stable screenshot; the dialog remains a read-only evidence pass.
+        dialog.from_combo.setCurrentIndex(2)
+        dialog.to_combo.setCurrentIndex(4)
+        if args.intercell_large_offset_demo:
+            dialog.off_x.setValue(250)
+            dialog.off_y.setValue(-125)
+        else:
+            dialog.off_x.setValue(2)
+            dialog.off_y.setValue(-1)
+        dialog.resize(620, 500)
+        dialog.show()
+        QApplication.processEvents()
+        path = args.output / f"{args.prefix}-dark-150.png"
+        pixmap = dialog.grab()
+        if not pixmap.save(str(path)):
+            raise OSError(f"failed to save screenshot: {path}")
+        print(f"saved {path} ({pixmap.width()}x{pixmap.height()})")
+        dialog.close()
+        window.close()
+        return 0
+    controller = ViewController(window, connect_actions=False)
+    history_workspace = None
+    document = template_document(
+        args.template, nx=args.nx, ny=args.ny, boundary_kind=args.boundary,
+        connectivity=args.connectivity, shape=args.shape,
+    )
+    if args.oblique_a1_demo:
+        if not isinstance(document.get("cell"), dict):
+            raise ValueError("--oblique-a1-demo requires a vector-cell template")
+        document = dict(document)
+        document["cell"] = {
+            key: list(value) if isinstance(value, (tuple, list)) else value
+            for key, value in document["cell"].items()
+        }
+        document["cell"]["a1"][1] = 0.45
+    controller.apply_document(document)
+    if args.resource_hint_demo:
+        # Exercise the live warning path without allocating the intentionally
+        # oversized OBC matrix.  The dimensions remain editable and the model
+        # can still be saved; this screenshot only verifies the preflight UX.
+        controller.set_runtime_preferences(calculation_mode="manual")
+        window.panel.set_boundary_index(1)
+        window.panel.set_dim(30, 30)
+        window.resize(args.window_width, args.window_height)
+        window.show()
+        for group in (
+            window.panel.params_group,
+            window.panel.energy_group,
+            window.panel.display_group,
+            window.panel.sites_group,
+            window.panel.hops_group,
+        ):
+            group.setExpanded(False)
+        window.panel.boundary_group.setExpanded(True)
+        window.set_dirty(False)
+        scale = int(round((args.ui_scale or 1.0) * 100))
+        for theme in ("light", "dark"):
+            window._set_theme_mode(theme)
+            QApplication.processEvents()
+            _save(window, args.output / f"{args.prefix}-{theme}-{scale}.png")
+        window.close()
+        return 0
+    if args.dense_guard_demo:
+        # The controller catches the pre-allocation guard as a normal input
+        # error.  Keep the oversized dimensions editable/savable while making
+        # the reason and the safe next action visible in the UI.
+        window.resize(args.window_width, args.window_height)
+        window.show()
+        window.tabs.setCurrentIndex(1)
+        for group in (
+            window.panel.params_group,
+            window.panel.energy_group,
+            window.panel.display_group,
+            window.panel.sites_group,
+            window.panel.hops_group,
+        ):
+            group.setExpanded(False)
+        window.panel.boundary_group.setExpanded(True)
+        window.panel_scroll.ensureWidgetVisible(window.panel.error_label)
+        window.set_dirty(False)
+        scale = int(round((args.ui_scale or 1.0) * 100))
+        for theme in ("light", "dark"):
+            window._set_theme_mode(theme)
+            QApplication.processEvents()
+            _save(window, args.output / f"{args.prefix}-{theme}-{scale}.png")
+        window.close()
+        return 0
+    if args.history_demo:
+        baseline = controller.current_document()
+        history = DocumentHistory(limit=10)
+        history.seed(baseline)
+        # The regular application enables workspace mode during startup and
+        # provides an app-data root before preferences/autosave can write.
+        # This focused screenshot mode creates an isolated disposable root so
+        # it exercises the same undo labels without touching a user's models
+        # or preferences (nor leaving test files alongside screenshots).
+        history_workspace = tempfile.TemporaryDirectory(
+            dir=args.output, prefix=".history-workspace-"
+        )
+        window._workspace_root = Path(history_workspace.name)
+        window.preferences.autosave = False
+        window._workspace_enabled = True
+        window._sessions = [_Session(ModelSessionData(name=args.template), baseline, history)]
+        window._active_index = 0
+        changed = dict(baseline)
+        changed["sites"] = [dict(site) for site in baseline["sites"]]
+        changed["sites"][0]["x"] = float(changed["sites"][0]["x"]) + 0.25
+        controller.apply_document(changed)
+    if args.bond_ratio_demo:
+        if window.panel.hop_table.rowCount() < 3:
+            raise ValueError("bond ratio demo requires at least three hopping rows")
+        window.panel.set_hopping_strength(0, 1.2)
+        window.panel.set_hopping_strength(1, 0.3)
+        window.panel.set_hopping_strength(2, 0.3)
+        controller.rebuild()
+    window.panel.display_group.setExpanded(True)
+    window.panel.sites_group.setExpanded(False)
+    window.panel.hops_group.setExpanded(False)
+    window.resize(args.window_width, args.window_height)
+    window.show()
+    window.tabs.setCurrentIndex({
+        "combined": 0, "matrix": 1, "lattice": 2,
+        "band": 3, "wavefunction": 4,
+    }[args.tab])
+    if args.intercell_panel_demo:
+        window._set_theme_mode("dark")
+        window._set_ui_scale(1.5, persist=False)
+        for group in (
+            window.panel.boundary_group,
+            window.panel.params_group,
+            window.panel.energy_group,
+            window.panel.display_group,
+            window.panel.sites_group,
+        ):
+            group.setExpanded(False)
+        window.panel.hops_group.setExpanded(True)
+        window.panel_scroll.ensureWidgetVisible(window.panel.hops_group)
+        QApplication.processEvents()
+        _save(window, args.output / f"{args.prefix}-dark-150.png")
+        window.set_dirty(False)
+        window.close()
+        return 0
+    if args.hop_relation_demo:
+        # Keep the evidence focused on the table itself: one intra-cell and
+        # one inter-cell row are enough to verify the semantic tint, tooltips,
+        # and compact layout without a dense model obscuring the distinction.
+        window._set_ui_scale(args.ui_scale or 1.0, persist=False)
+        for group in (
+            window.panel.boundary_group,
+            window.panel.params_group,
+            window.panel.energy_group,
+            window.panel.display_group,
+            window.panel.sites_group,
+        ):
+            group.setExpanded(False)
+        window.panel.hops_group.setExpanded(True)
+        window.panel.append_hop(["t", 0, 0, 0, 0, "-t", "none", "0", 1])
+        window.panel.append_hop(["t", 0, 0, 1, 0, "-t", "none", "0", 1])
+        window.panel.hop_table.selectRow(window.panel.hop_table.rowCount() - 1)
+        controller.rebuild()
+        for theme in ("light", "dark"):
+            window._set_theme_mode(theme)
+            QApplication.processEvents()
+            scale = int(round((args.ui_scale or 1.0) * 100))
+            _save(window, args.output / f"{args.prefix}-{theme}-{scale}.png")
+            menu = window.panel._create_hop_context_menu(
+                window.panel.hop_table.rowCount() - 1
+            )
+            menu.popup(window.panel.hop_table.viewport().mapToGlobal(QPoint(12, 12)))
+            QApplication.processEvents()
+            menu_path = args.output / f"{args.prefix}-menu-{theme}-{scale}.png"
+            menu_pixmap = menu.grab()
+            if not menu_pixmap.save(str(menu_path)):
+                raise OSError(f"failed to save screenshot: {menu_path}")
+            print(f"saved {menu_path} ({menu_pixmap.width()}x{menu_pixmap.height()})")
+            menu.hide()
+        window.set_dirty(False)
+        window.close()
+        return 0
+    if args.restore_spacing_demo:
+        # Exercise the exact edge case guarded by the regression test: a
+        # model starts with automatic spacing, receives a manual Lx/Ly edit,
+        # and then restores the edit-session baseline.
+        window.panel.set_cell_size(None)
+        controller.rebuild()
+        window._set_lattice_edit_mode(True)
+        window.panel.set_cell_size((3.0, 4.0))
+        controller.rebuild()
+        window._restore_edit_baseline()
+        window.tabs.setCurrentIndex(2)
+        window.panel.sites_group.setExpanded(True)
+        window.panel.hops_group.setExpanded(False)
+        window.panel_scroll.ensureWidgetVisible(window.panel.sites_group)
+        window.set_dirty(False)
+        window._set_ui_scale(args.ui_scale or 1.0, persist=False)
+        scale = int(round((args.ui_scale or 1.0) * 100))
+        for theme in ("light", "dark"):
+            window._set_theme_mode(theme)
+            QApplication.processEvents()
+            _save(window, args.output / f"{args.prefix}-{theme}-{scale}.png")
+        window.close()
+        return 0
+    if args.intercell_menu_demo:
+        # Keep the evidence focused on the actual side-panel entry point.
+        # Capture the popup itself because QWidget.grab() intentionally does
+        # not include a separate QMenu top-level window.
+        window._set_theme_mode("dark")
+        window._set_ui_scale(1.5, persist=False)
+        QApplication.processEvents()
+        window.panel.hops_group.setExpanded(True)
+        window.panel.add_hop_mode_btn.ensurePolished()
+        menu = window.panel.add_hop_mode_btn.menu()
+        menu.popup(window.panel.add_hop_mode_btn.mapToGlobal(
+            QPoint(0, window.panel.add_hop_mode_btn.height())
+        ))
+        QApplication.processEvents()
+        path = args.output / f"{args.prefix}-dark-150.png"
+        pixmap = menu.grab()
+        if not pixmap.save(str(path)):
+            raise OSError(f"failed to save screenshot: {path}")
+        print(f"saved {path} ({pixmap.width()}x{pixmap.height()})")
+        menu.hide()
+        window.close()
+        return 0
+    if args.diagonal_intercell_demo:
+        window._set_theme_mode("dark")
+        window._set_ui_scale(1.5, persist=False)
+        for group in (
+            window.panel.boundary_group,
+            window.panel.params_group,
+            window.panel.energy_group,
+            window.panel.display_group,
+            window.panel.sites_group,
+        ):
+            group.setExpanded(False)
+        window.panel.hops_group.setExpanded(True)
+        window.panel_scroll.ensureWidgetVisible(window.panel.hops_group)
+        right_action = next(
+            action for action in window.panel.add_hop_mode_btn.menu().actions()
+            if "右侧胞间" in action.text()
+        )
+        right_action.trigger()
+        last_row = window.panel.hop_table.rowCount() - 1
+        window.panel.hop_table.item(last_row, 4).setText("1")
+        controller.rebuild()
+        QApplication.processEvents()
+        _save(window, args.output / f"{args.prefix}-dark-150.png")
+        window.close()
+        return 0
+    if args.selected_intercell_demo:
+        window._set_theme_mode("dark")
+        window._set_ui_scale(1.5, persist=False)
+        for group in (
+            window.panel.boundary_group,
+            window.panel.params_group,
+            window.panel.energy_group,
+            window.panel.display_group,
+            window.panel.sites_group,
+        ):
+            group.setExpanded(False)
+        window.panel.hops_group.setExpanded(True)
+        window.panel_scroll.ensureWidgetVisible(window.panel.hops_group)
+        # Select the final existing bond so the new relation row must retain
+        # its endpoints instead of silently falling back to 0 → 1.
+        existing_row = window.panel.hop_table.rowCount() - 1
+        window.panel.hop_table.selectRow(existing_row)
+        selected = window.panel.get_hop_rows()[existing_row]
+        right_action = next(
+            action for action in window.panel.add_hop_mode_btn.menu().actions()
+            if "右侧胞间" in action.text()
+        )
+        right_action.trigger()
+        controller.rebuild()
+        # Verify the compact presentation independently of the insertion
+        # action: dx/dy remain visible while phase metadata is folded away.
+        window.panel.hop_advanced_check.setChecked(False)
+        QApplication.processEvents()
+        # Leave the newly inserted row selected so the table and its relation
+        # summary are visible in one stable evidence frame.
+        window.panel.hop_table.selectRow(window.panel.hop_table.rowCount() - 1)
+        window.statusBar().showMessage(
+            f"已沿用选中键 {selected['from_site']}→{selected['to_site']} 添加右侧胞间项"
+        )
+        QApplication.processEvents()
+        _save(window, args.output / f"{args.prefix}-dark-150.png")
+        # This is a read-only evidence pass; do not open the save-confirmation
+        # dialog while closing the intentionally modified demo document.
+        window.set_dirty(False)
+        window.close()
+        return 0
+    if args.energy is not None:
+        if args.boundary != "obc":
+            raise ValueError("--energy 仅适用于双开（OBC）波函数")
+        window.panel.set_energy(args.energy)
+        # Small/medium OBC renders are synchronous. If a caller requests a
+        # huge system, the normal loading state is intentionally captured
+        # rather than pretending a background result already exists.
+        if window.wf_view._data is not None:
+            window.wf_view.select_energy(args.energy)
+    if args.edit_lattice:
+        window.panel.params_group.setExpanded(False)
+        window.panel.energy_group.setExpanded(False)
+        window.panel.display_group.setExpanded(False)
+        window.panel.sites_group.setExpanded(True)
+        window.panel.hops_group.setExpanded(False)
+        window.lattice_mode_btn.setChecked(True)
+    if args.ghost_hop_demo:
+        if args.boundary != "semi":
+            raise ValueError("--ghost-hop-demo 仅适用于半无限边界")
+        window.panel.params_group.setExpanded(False)
+        window.panel.energy_group.setExpanded(False)
+        window.panel.display_group.setExpanded(False)
+        window.panel.sites_group.setExpanded(False)
+        window.panel.hops_group.setExpanded(True)
+        window.lattice_mode_btn.setChecked(True)
+        window.lattice_add_hop_btn.setChecked(True)
+        window.statusBar().showMessage(
+            "添加跃迁：中心格点与蓝色周期虚影均可作为端点，自动生成 dx/dy"
+        )
+    QApplication.processEvents()
+    if args.show_all_hop_editors:
+        window.lattice_coeff_btn.setChecked(True)
+    if args.select_hop_row is not None:
+        window.lattice_scene.activate_hop_editor(args.select_hop_row)
+    controller.fit_all(force=True)
+
+    target_view = {
+        "combined": window.combined_matrix_gv,
+        "matrix": window.matrix_gv,
+        "lattice": window.lattice_gv,
+        "band": window.band_gv,
+        "wavefunction": window.wf_view.view,
+    }[args.tab]
+
+    def prepare_view() -> None:
+        QApplication.processEvents()
+        controller.fit_all(force=True)
+        if args.view_zoom > 1.0:
+            target_view._scale_by(args.view_zoom)
+            scene = target_view.scene()
+            matrix_rect = getattr(scene, "_matrix_rect", None)
+            if matrix_rect is not None and matrix_rect.isValid():
+                target_view.centerOn(matrix_rect.center())
+        QApplication.processEvents()
+
+    # The historical default emits light100/dark100/dark150 so existing
+    # evidence links remain stable.  A requested scale emits both themes at
+    # that exact scale, allowing a real multi-scale clipping audit instead of
+    # assuming that the 150% frame represents every user's DPI setting.
+    if args.ui_scale is None:
+        scale_plan = (("light", 1.0), ("dark", 1.0), ("dark", 1.5))
+    else:
+        scale_plan = (("light", float(args.ui_scale)),
+                      ("dark", float(args.ui_scale)))
+    for mode, ui_scale in scale_plan:
+        window._set_theme_mode(mode)
+        window._set_ui_scale(ui_scale, persist=False)
+        prepare_view()
+        if args.matrix_selection_demo or args.matrix_copy_demo:
+            window.tabs.setCurrentIndex(1)
+            window._on_matrix_cell_clicked(0, 1 if window.matrix_scene._data.n > 1 else 0)
+            if args.matrix_copy_demo:
+                window._copy_selected_matrix_cell()
+            QApplication.processEvents()
+        suffix = int(round(ui_scale * 100))
+        _save(window, args.output / f"{args.prefix}-{mode}-{suffix}.png")
+    if args.history_demo:
+        window.edit_menu.popup(
+            window.menuBar().mapToGlobal(QPoint(48, window.menuBar().height()))
+        )
+        QApplication.processEvents()
+        _save(window, args.output / f"{args.prefix}-history-menu-dark-150.png")
+        window.edit_menu.hide()
+    if args.matrix_copy_demo:
+        # Capture the actual menu popup so the affordance is visible in the
+        # evidence, not merely asserted through an enabled QAction.
+        window.edit_menu.popup(
+            window.menuBar().mapToGlobal(QPoint(48, window.menuBar().height()))
+        )
+        QApplication.processEvents()
+        menu_path = args.output / f"{args.prefix}-matrix-copy-menu-dark-150.png"
+        menu_pixmap = window.edit_menu.grab()
+        if not menu_pixmap.save(str(menu_path)):
+            raise OSError(f"failed to save screenshot: {menu_path}")
+        print(f"saved {menu_path} ({menu_pixmap.width()}x{menu_pixmap.height()})")
+        window.edit_menu.hide()
+    # Rendering is a read-only verification pass.  Bond-ratio demos and
+    # display/theme changes intentionally mark the document dirty, but the
+    # off-screen harness must not open the application's save-confirmation
+    # dialog while it is shutting down (that would make CI hang).
+    window.set_dirty(False)
+    # Large ribbons use the asynchronous spectral path. Wait for its queued
+    # callback before destroying the controller, otherwise the worker can
+    # emit into a deleted Qt signal carrier during interpreter shutdown.
+    QThreadPool.globalInstance().waitForDone(30_000)
+    QApplication.processEvents()
+    window.close()
+    if history_workspace is not None:
+        history_workspace.cleanup()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,30 @@
+# Python caches and local test state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local visual/regression evidence and generated test data
+.codex-artifacts/diagnostics/*
+.codex-artifacts/screenshots/*
+.codex-artifacts/test-data/*
+.codex-artifacts/test-runs/*
+!.codex-artifacts/**/.gitkeep
+
+# Local packaging/build output
+build/
+dist/
+*.egg-info/
+
+# Editor/OS noise
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Local pytest result dumps
+.codex-artifacts/*.xml

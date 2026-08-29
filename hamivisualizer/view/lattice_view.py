@@ -1,0 +1,1690 @@
+"""晶格结构视图: 格点 / 键 / 元胞框 / 半无限虚影.
+
+对应 MATLAB draw_lattice §2.1/§6.3:
+  - 首胞高亮 (黑实线框 + 浅蓝填充), 其余元胞灰色虚线框
+  - NN 键实线红 / NNN 键虚线绿; 半无限虚影键黯淡 (cNN*0.5+0.5 / cNNN*0.4+0.6)
+  - 格点圆 (A/B 子格配色) + 白字序号; 虚影格点半透明并带序号
+z 分层: 元胞框(0) < 键(1) < 虚影键(1.5) < 虚影格点(2) < 格点(3) < 序号(4)。
+"""
+
+from __future__ import annotations
+
+import math
+from fractions import Fraction
+
+from PySide6.QtCore import (
+    QCoreApplication, QPointF, QRectF, QEvent, QTimer, Qt, Signal,
+)
+from PySide6.QtGui import (
+    QColor, QBrush, QFont, QPainterPath, QPen, QPolygonF,
+)
+from PySide6.QtWidgets import (
+    QGraphicsItem,
+    QGraphicsScene,
+    QGraphicsRectItem,
+    QGraphicsLineItem,
+    QGraphicsEllipseItem,
+    QGraphicsTextItem,
+    QGraphicsPolygonItem,
+    QGraphicsProxyWidget,
+    QApplication,
+    QLineEdit,
+    QStyle,
+    QStyleOptionGraphicsItem,
+)
+
+from .rendermodel import LatticeSceneData, Palette
+
+
+def _q(rgb: tuple, alpha: int = 255) -> QColor:
+    return QColor(*[int(c * 255) for c in rgb], alpha)
+
+
+def _pen(rgb, width: float, style=None) -> QPen:
+    """cosmetic 画笔: 宽度恒为像素 (MATLAB LineWidth 语义), 与缩放无关."""
+    pen = QPen(_q(rgb), width)
+    if style is not None:
+        pen.setStyle(style)
+    pen.setCosmetic(True)
+    return pen
+
+
+def _blend(rgb: tuple, k: float, base: float) -> tuple:
+    """MATLAB 虚影键配色: rgb*k + base (标量加), 返回 0-1 元组."""
+    return tuple(
+        min(1.0, c * k + base) for c in rgb
+    )
+
+
+def _alpha_over_white(rgb: tuple, alpha: int) -> QColor:
+    """把半透明色预先混合到画布底色 (规避部分平台 QBrush alpha 渲染成黑的 bug).
+
+    base 为画布 RGB（亮色=白，深色=深画布色），由调用方传入；保留旧
+    函数名以便外部引用，内部按白底预混。
+    """
+    return _alpha_over(rgb, alpha, (255, 255, 255))
+
+
+def _alpha_over(rgb: tuple, alpha: int, base: tuple) -> QColor:
+    t = alpha / 255.0
+    return QColor(*[int(c * 255 * t + b * (1 - t)) for c, b in zip(rgb, base)])
+
+
+def _fit_text_to_circle(item: QGraphicsTextItem, x: float, y: float,
+                        diameter: float, fill: float = 0.78) -> None:
+    """Size a label in scene units so it scales naturally with the lattice."""
+    br = item.boundingRect()
+    if br.width() <= 0 or br.height() <= 0:
+        return
+    scale = min(diameter * fill / br.width(), diameter * fill / br.height())
+    item.setScale(scale)
+    item.setPos(x - br.width() * scale / 2, y - br.height() * scale / 2)
+
+
+def _parse_positive_strength(text: str) -> float:
+    """Parse a positive hopping coefficient, including exact fractions.
+
+    The side-panel parameter editor already accepts values such as ``1/3``.
+    The on-canvas coefficient field must use the same low-surprise grammar;
+    otherwise users can configure a ratio in one place but receive a cryptic
+    error after clicking a bond.  Fractions are deliberately delegated to
+    :class:`fractions.Fraction`, so arbitrary Python expressions never become
+    executable input.
+    """
+    raw = str(text).strip()
+    if not raw:
+        raise ValueError("跃迁强度不能为空")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        try:
+            value = float(Fraction(raw.replace(" ", "")))
+        except (ValueError, ZeroDivisionError, OverflowError):
+            raise ValueError("请输入正数或分数，例如 1/3") from None
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("跃迁强度必须是正的有限数值")
+    return value
+
+
+class _EditableSiteItem(QGraphicsEllipseItem):
+    """A unit-cell handle that snaps unless Alt is held."""
+
+    def __init__(self, scene, index: int, x: float, y: float, radius: float = 0.23):
+        super().__init__(-radius, -radius, 2 * radius, 2 * radius)
+        self.editor_scene = scene
+        self.site_index = index
+        self.setPos(x, -y)
+        self.setFlags(
+            QGraphicsItem.ItemIsMovable
+            | QGraphicsItem.ItemIsSelectable
+            | QGraphicsItem.ItemSendsGeometryChanges
+        )
+        self.setCursor(Qt.OpenHandCursor)
+        self.setZValue(20)
+        self._press_pos = QPointF()
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange and self.scene() is not None:
+            p = QPointF(value)
+            if self.editor_scene.snap_enabled and not (
+                QApplication.keyboardModifiers() & Qt.AltModifier
+            ):
+                p = self.editor_scene.snap_position(self.site_index, p, self._press_pos)
+            return p
+        return super().itemChange(change, value)
+
+    def paint(self, painter, option, widget=None):
+        """Paint a font-independent vector index that follows the view scale."""
+        # QGraphicsEllipseItem's default selected-state decoration is a large
+        # white halo on some Fusion/Windows styles.  It visually overwhelms
+        # the atom and can be mistaken for a second node.  Suppress that
+        # style decoration and draw a small, explicit blue focus ring below.
+        clean_option = QStyleOptionGraphicsItem(option)
+        clean_option.state &= ~QStyle.State_Selected
+        super().paint(painter, clean_option, widget)
+        if self.isSelected():
+            ring = QPen(QColor("#7dd3fc"), 1.4)
+            ring.setCosmetic(True)
+            painter.save()
+            painter.setPen(ring)
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(self.rect().adjusted(0.035, 0.035, -0.035, -0.035))
+            painter.restore()
+        # The offscreen Qt font backend can return tofu boxes even for ASCII
+        # digits.  A tiny seven-segment vector alphabet is deterministic on
+        # every platform and remains sharp while zooming.
+        segment_points = {
+            "a": ((0.15, 0.0), (0.85, 0.0)),
+            "b": ((1.0, 0.15), (1.0, 0.85)),
+            "c": ((1.0, 1.15), (1.0, 1.85)),
+            "d": ((0.15, 2.0), (0.85, 2.0)),
+            "e": ((0.0, 1.15), (0.0, 1.85)),
+            "f": ((0.0, 0.15), (0.0, 0.85)),
+            "g": ((0.15, 1.0), (0.85, 1.0)),
+        }
+        digit_segments = {
+            "0": "abcdef", "1": "bc", "2": "abdeg", "3": "abcdg",
+            "4": "bcfg", "5": "acdfg", "6": "acdefg", "7": "abc",
+            "8": "abcdefg", "9": "abcdfg",
+        }
+        # The numerical site index stays zero-based internally; visible edit
+        # handles follow the same one-based convention as normal lattice
+        # labels, matrix rulers, and status messages.
+        text = str(self.site_index + 1)
+        path = QPainterPath()
+        for column, digit in enumerate(text):
+            offset = column * 1.35
+            for segment in digit_segments.get(digit, ""):
+                (x1, y1), (x2, y2) = segment_points[segment]
+                path.moveTo(offset + x1, y1)
+                path.lineTo(offset + x2, y2)
+        bounds = path.boundingRect()
+        if bounds.height() <= 0:
+            return
+        diameter = self.rect().width()
+        scale = min(diameter * 0.58 / max(bounds.width(), 0.5),
+                    diameter * 0.58 / bounds.height())
+        painter.save()
+        painter.translate(self.rect().center())
+        painter.scale(scale, scale)
+        painter.translate(-bounds.center())
+        pen = QPen(QColor("white"), 0.15)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path)
+        painter.restore()
+
+    def mousePressEvent(self, event):
+        self._press_pos = self.pos()
+        self.setFlag(QGraphicsItem.ItemIsFocusable, True)
+        self.setFocus(Qt.MouseFocusReason)
+        self.setCursor(Qt.ClosedHandCursor)
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self.setCursor(Qt.OpenHandCursor)
+        # QGraphicsItem may receive a sub-pixel position correction during a
+        # plain click (especially after a view zoom). Treat that as a click,
+        # not as a site edit; otherwise merely selecting a site can trigger a
+        # rebuild and make the clicked element appear to disappear.
+        moved = (self.pos() - self._press_pos).manhattanLength() >= 0.02
+        if not moved:
+            self.setPos(self._press_pos)
+        if moved:
+            anchor_x, anchor_y = self.editor_scene.edit_anchor_offset
+            self.editor_scene.siteMoved.emit(
+                self.site_index,
+                float(self.pos().x() - anchor_x),
+                float(-self.pos().y() - anchor_y),
+            )
+        else:
+            self.editor_scene.activate_site(self.site_index)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape:
+            if self.editor_scene.hop_creation_mode:
+                self.editor_scene.set_hop_creation_mode(False)
+                event.accept()
+                return
+            self.setPos(self._press_pos)
+            self.editor_scene.editSelectionChanged.emit("已取消本次拖动，格点已回到拖动前位置")
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class _GhostSiteItem(QGraphicsEllipseItem):
+    """A read-only periodic image that becomes a bond endpoint on demand.
+
+    Ghosts deliberately do not accept mouse buttons during normal browsing,
+    so they never steal a pan/selection click.  The explicit bond tool toggles
+    their hit targets on; a click then carries the primitive-site identity and
+    relative cell offset to :class:`LatticeView` for an unambiguous inter-cell
+    row.
+    """
+
+    def __init__(self, scene, x: float, y: float, radius: float,
+                 source_site: int, cell_dx: int, cell_dy: int):
+        super().__init__(-radius, -radius, 2 * radius, 2 * radius)
+        self.editor_scene = scene
+        self.source_site = int(source_site)
+        self.cell_dx = int(cell_dx)
+        self.cell_dy = int(cell_dy)
+        self.setPos(float(x), -float(y))
+        self.setBrush(QBrush(_q((0.55, 0.60, 0.65))))
+        self.setPen(_pen((0.42, 0.47, 0.53), 0.6))
+        self.setOpacity(0.45)
+        self.setZValue(2.1)
+        # Let the view distinguish this deliberate endpoint hit from empty
+        # canvas before arming its manual pan gesture.  The item remains
+        # inert in normal browsing because its accepted mouse buttons are
+        # still ``NoButton`` until the explicit bond tool is enabled.
+        self.setData(0, "ghost-endpoint")
+        # The cursor advertises affordance only while the explicit tool is
+        # armed; ordinary browsing should keep the neutral arrow over
+        # read-only periodic images.
+        self.setCursor(Qt.ArrowCursor)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+
+    def set_interaction_enabled(self, enabled: bool) -> None:
+        self.setAcceptedMouseButtons(Qt.LeftButton if enabled else Qt.NoButton)
+        if enabled:
+            self.setCursor(Qt.CrossCursor)
+            self.setPen(_pen((0.25, 0.68, 0.95), 1.2))
+            self.setOpacity(0.72)
+            self.setToolTip(
+                f"周期像：格点 {self.source_site + 1}，"
+                f"相对元胞偏移 ({self.cell_dx:+d}, {self.cell_dy:+d})；"
+                "添加跃迁工具开启时可作为端点"
+            )
+        else:
+            self.setCursor(Qt.ArrowCursor)
+            self.setPen(_pen((0.42, 0.47, 0.53), 0.6))
+            self.setOpacity(0.45)
+            self.setToolTip("")
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt override
+        if self.editor_scene.hop_creation_mode and event.button() == Qt.LeftButton:
+            self.editor_scene.activate_ghost(
+                self.source_site, self.cell_dx, self.cell_dy,
+            )
+            event.accept()
+            return
+        event.ignore()
+
+
+class _EditableHopGuide(QGraphicsLineItem):
+    """Wide, quiet hit target for one editable hopping definition.
+
+    Dense lattices should not turn every bond into a permanent text field.
+    This guide follows the source-cell bond and exposes a clear hover state;
+    clicking it opens the single coefficient editor for that hop.
+    """
+
+    def __init__(self, scene, row: int, x1: float, y1: float,
+                 x2: float, y2: float):
+        super().__init__(x1, y1, x2, y2)
+        self.editor_scene = scene
+        self.row = int(row)
+        self.setAcceptedMouseButtons(Qt.LeftButton)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setZValue(14)
+        self.setData(0, "hopping-guide")
+        self.set_selected(False)
+
+    def set_selected(self, selected: bool) -> None:
+        if selected:
+            self.setPen(_pen((0.20, 0.68, 0.98), 1.6, Qt.DashLine))
+            self.setOpacity(0.92)
+            return
+        # Keep a generous cosmetic hit area while making the guide almost
+        # invisible. The physical NN/NNN bond below stays the visual source
+        # of truth; this layer exists only to make direct editing discoverable.
+        pen = _pen((0.32, 0.58, 0.76), 8.0)
+        # Hit testing uses the line item's shape, not its alpha. Keep the
+        # idle target truly invisible so overlapping Kagome bonds do not
+        # create a translucent fan around the editable cell.
+        pen.setColor(QColor(82, 148, 194, 0))
+        self.setPen(pen)
+        self.setOpacity(1.0)
+
+    def hoverEnterEvent(self, event):  # noqa: N802 - Qt override
+        self.setPen(_pen((0.20, 0.68, 0.98), 1.5, Qt.DashLine))
+        self.setOpacity(0.95)
+        # In dense coefficient mode the leader is progressive-disclosure
+        # UI: hovering the physical bond should reveal the matching field
+        # without requiring a click (and without rebuilding the scene).
+        self.editor_scene._set_hovered_hop_row(self.row)
+        super().hoverEnterEvent(event)
+
+    def hoverLeaveEvent(self, event):  # noqa: N802 - Qt override
+        self.set_selected(self.row == self.editor_scene.active_hop_row)
+        self.editor_scene._set_hovered_hop_row(None)
+        super().hoverLeaveEvent(event)
+
+    def mousePressEvent(self, event):  # noqa: N802 - Qt override
+        if event.button() == Qt.LeftButton:
+            self.editor_scene.activate_hop_editor(self.row)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class _HopStrengthEdit(QLineEdit):
+    """Fixed-pixel bond editor that asks its scene to reveal it on focus."""
+
+    focusEntered = Signal()
+    focusLeft = Signal()
+    hoverEntered = Signal()
+    hoverLeft = Signal()
+    owner_scene = None
+
+    def enterEvent(self, event):  # noqa: N802 - Qt override
+        super().enterEvent(event)
+        self.hoverEntered.emit()
+
+    def leaveEvent(self, event):  # noqa: N802 - Qt override
+        super().leaveEvent(event)
+        self.hoverLeft.emit()
+
+    def focusInEvent(self, event):  # noqa: N802 - Qt override
+        super().focusInEvent(event)
+        self.focusEntered.emit()
+
+    def focusOutEvent(self, event):  # noqa: N802 - Qt override
+        super().focusOutEvent(event)
+        self.focusLeft.emit()
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        # UI-scale changes resize the fixed-pixel field after the view's
+        # transform has already been fitted. Reflow on the next event-loop
+        # turn so the new full width/height participates in collision and
+        # boundary calculations (including the bottom border).
+        scene = self.owner_scene
+        if scene is not None:
+            QTimer.singleShot(0, scene._reflow_editors)
+
+
+class LatticeView(QGraphicsScene):
+    """晶格结构 (QGraphicsScene 自绘)."""
+
+    siteMoved = Signal(int, float, float)
+    siteAddRequested = Signal(float, float)
+    siteDeleteRequested = Signal(int)
+    hoppingRequested = Signal(int, int)
+    hoppingRequestedWithOffset = Signal(int, int, int, int)
+    hoppingStrengthEdited = Signal(int, float)
+    editSelectionChanged = Signal(str)
+    hopCreationModeChanged = Signal(bool)
+    siteCreationModeChanged = Signal(bool)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._data: LatticeSceneData | None = None
+        self.edit_mode = False
+        self.snap_step = 0.25
+        self.snap_enabled = True
+        self._edit_sites: list[tuple[float, float, str]] = []
+        # Immutable geometry captured on entry to an edit session.  The
+        # current editable sites are replaced after every rebuild, so they
+        # alone cannot provide a magnetic way back to the original graphene
+        # construction once the user has completed one drag.
+        self._snap_reference_sites: list[tuple[float, float]] = []
+        # Physical translation of the real finite-cell copy used as the
+        # editor's visual anchor. Site-table coordinates always stay local to
+        # the primitive cell; this only prevents the handles from floating at
+        # (0, 0) when a disk/hexagon mask excludes that cell.
+        self._edit_anchor_offset = (0.0, 0.0)
+        self._edit_items: dict[int, _EditableSiteItem] = {}
+        self._ghost_items: list[_GhostSiteItem] = []
+        self._edit_hops: list[dict] = []
+        self._show_all_hop_editors = False
+        # Dense models default to a nearest-neighbour editing layer.  The
+        # physical long-range terms remain in the model and can be explicitly
+        # revealed from the edit toolbar, rather than turning every editing
+        # session into a green crossing-line mesh.
+        self._show_edit_details = False
+        self._active_hop_row: int | None = None
+        # A dense right-hand coefficient rail keeps all values editable while
+        # showing only the leader belonging to the bond under the pointer.
+        # This transient row is intentionally separate from the committed
+        # active row so moving the pointer never rebuilds or mutates a model.
+        self._hovered_hop_row: int | None = None
+        self._focused_hop_row: int | None = None
+        # QGraphicsProxyWidget has QObject ownership semantics in PySide6;
+        # keeping explicit references prevents an input proxy (and its guide)
+        # from being garbage-collected after the first mouse event.
+        self._edit_proxies: list[QGraphicsProxyWidget] = []
+        self._edit_guides: list[QGraphicsLineItem] = []
+        self._edit_leaders: list[QGraphicsLineItem] = []
+        # Two-segment dashed leaders connect each displaced editor to its bond
+        # midpoint. Keep this separate from the public anchor tuples so
+        # existing callers continue to receive (proxy, x, y).
+        self._edit_leader_links: list[tuple[QGraphicsLineItem, QGraphicsLineItem,
+                                              float, float, QGraphicsProxyWidget]] = []
+        self._edit_proxy_anchors: list[tuple[QGraphicsProxyWidget, float, float]] = []
+        self._last_editor_layout: tuple[float, list] = (1.0, [])
+        self._cell_vectors = ((1.0, 0.0), (0.0, 1.0))
+        self._hop_start: int | None = None
+        self._hop_start_endpoint: tuple[int, int, int] | None = None
+        # Creating a bond is deliberately an explicit tool, not a side
+        # effect of selecting a site.  The old two-click overload was easy
+        # to trigger while inspecting/dragging a lattice and made ordinary
+        # clicks look as though geometry or bonds had disappeared.
+        self._hop_creation_mode = False
+        # Adding a site also changes topology and is therefore explicit.  A
+        # double click on a busy lattice is far too easy to perform by
+        # accident; the tool uses one intentional click on blank canvas.
+        self._site_creation_mode = False
+        self._dark = False
+        self._blend_base: tuple = (255, 255, 255)
+        self._show_nn = True
+        self._show_nnn = True
+        self._show_ghosts = True
+        self._show_cells = True
+        self._site_radius = 0.18
+
+    def set_display_options(self, *, nn: bool = True, nnn: bool = True,
+                            ghosts: bool = True, cells: bool = True,
+                            redraw: bool = True):
+        """Set view-only layers without changing the lattice calculation."""
+        new = tuple(map(bool, (nn, nnn, ghosts, cells)))
+        old = (self._show_nn, self._show_nnn, self._show_ghosts, self._show_cells)
+        self._show_nn, self._show_nnn, self._show_ghosts, self._show_cells = new
+        if redraw and new != old and self._data is not None:
+            self.set_data(self._data)
+
+    def set_theme(self, dark: bool):
+        """切换晶格视图明暗：首胞/虚影填充按画布底色预混，重新渲染。"""
+        self._dark = bool(dark)
+        self._blend_base = (16, 22, 29) if dark else (255, 255, 255)
+        if self._data is not None:
+            self.set_data(self._data)
+
+    def set_snap_enabled(self, enabled: bool):
+        """Enable/disable magnetic snapping without rebuilding the model."""
+        self.snap_enabled = bool(enabled)
+
+    def set_snap_reference_sites(self, sites) -> None:
+        """Set immutable local-coordinate snap targets for this edit session.
+
+        ``sites`` deliberately accepts both persisted site dictionaries and
+        lightweight ``(x, y, ...)`` rows, so restoring a saved model and
+        programmatic scenes share the same behaviour.  These references are
+        visual assistance only; they never alter the Hamiltonian by
+        themselves.
+        """
+        references: list[tuple[float, float]] = []
+        for site in sites or ():
+            try:
+                if isinstance(site, dict):
+                    x, y = site["x"], site["y"]
+                else:
+                    x, y = site[0], site[1]
+                x, y = float(x), float(y)
+            except (IndexError, KeyError, TypeError, ValueError):
+                continue
+            if math.isfinite(x) and math.isfinite(y):
+                references.append((x, y))
+        self._snap_reference_sites = references
+
+    @property
+    def active_hop_row(self) -> int | None:
+        return self._active_hop_row
+
+    @property
+    def hovered_hop_row(self) -> int | None:
+        """Row whose physical bond/editor is currently under the pointer."""
+        return self._hovered_hop_row
+
+    def handle_viewport_hover(self, view, point) -> None:
+        """Resolve a rail field from the *screen* pointer position.
+
+        ``QGraphicsProxyWidget`` editors intentionally ignore the view
+        transform so their controls stay a comfortable, fixed pixel size.
+        Consequently their scene bounding rectangles are much larger than
+        their on-screen footprints and Qt's normal scene hover hit-test can
+        report the wrong overlapping proxy on a dense rail.  The view knows
+        the actual device position, so use that as a small, deterministic
+        hit map for hover disclosure.  This is only a transient presentation
+        state: it never changes the model or rebuilds the scene.
+        """
+        if not self._edit_proxy_anchors:
+            return
+        hit_row = None
+        px, py = int(point.x()), int(point.y())
+        for proxy, _x, _y in self._edit_proxy_anchors:
+            if not proxy.isVisible():
+                continue
+            widget = proxy.widget()
+            if widget is None:
+                continue
+            top_left = view.mapFromScene(proxy.pos())
+            if (top_left.x() <= px < top_left.x() + widget.width()
+                    and top_left.y() <= py < top_left.y() + widget.height()):
+                row = proxy.data(1)
+                if row is not None:
+                    hit_row = int(row)
+                break
+        self._set_hovered_hop_row(hit_row)
+
+    @property
+    def show_all_hop_editors(self) -> bool:
+        return self._show_all_hop_editors
+
+    @property
+    def show_edit_details(self) -> bool:
+        """Whether NNN/long-range bonds are shown while editing."""
+        return self._show_edit_details
+
+    @property
+    def edit_anchor_offset(self) -> tuple[float, float]:
+        """Physical translation of the active editable primitive-cell copy."""
+        return self._edit_anchor_offset
+
+    def set_show_all_hop_editors(self, enabled: bool) -> None:
+        """Toggle dense all-bond editors; compact mode is the default."""
+        enabled = bool(enabled)
+        if enabled == self._show_all_hop_editors:
+            return
+        self._show_all_hop_editors = enabled
+        # The coefficient rail and the physical long-range layer are
+        # deliberately independent controls.  Showing every editable value
+        # must not unexpectedly turn on a mesh of NNN/long-range bonds; users
+        # can opt into that visual detail with the separate toolbar toggle.
+        if self._data is not None:
+            self.set_data(self._data)
+
+    def _set_hovered_hop_row(self, row: int | None) -> None:
+        """Reveal one dense-rail leader without rebuilding the scene.
+
+        Editors are embedded widgets, so rebuilding on every hover would
+        steal focus and make the pointer feel sticky.  Toggle only the two
+        existing line items instead; geometry remains owned by
+        :meth:`set_zoom_level`.
+        """
+        normalized = None if row is None else int(row)
+        if normalized == self._hovered_hop_row:
+            return
+        self._hovered_hop_row = normalized
+        self._update_edit_leader_visibility()
+
+    def _update_edit_leader_visibility(self) -> None:
+        """Apply progressive disclosure to coefficient leader lines."""
+        links = self._edit_leader_links
+        if not links:
+            return
+        # Compact mode has at most one active editor, or at most three small
+        # model editors. Keeping those leaders visible preserves immediate
+        # discoverability. Dense all-fields mode is the only case where
+        # crossing lines become a problem, so reveal just the hovered/focused
+        # row there.
+        dense = self._show_all_hop_editors and len(links) > 3
+        reveal_rows = {row for row in (
+            self._active_hop_row, self._hovered_hop_row, self._focused_hop_row,
+        ) if row is not None}
+        for diagonal, horizontal, _mx, _my, proxy in links:
+            row = proxy.data(1)
+            visible = (not dense) or (row in reveal_rows)
+            diagonal.setVisible(visible)
+            horizontal.setVisible(visible)
+
+    def set_show_edit_details(self, enabled: bool) -> None:
+        """Reveal/hide non-primary bonds only for the lattice edit session."""
+        enabled = bool(enabled)
+        if enabled == self._show_edit_details:
+            return
+        self._show_edit_details = enabled
+        if not enabled:
+            self._active_hop_row = None
+        if self._data is not None:
+            self.set_data(self._data)
+
+    def activate_hop_editor(self, row: int) -> None:
+        """Expose the one on-canvas coefficient field for a clicked bond."""
+        rows = {int(hop.get("row", -1)) for hop in self._editable_hops()}
+        if int(row) not in rows:
+            return
+        self._active_hop_row = int(row)
+        if self._data is not None:
+            self.set_data(self._data)
+        self.editSelectionChanged.emit(
+            f"已选跃迁 {int(row) + 1}；在键旁输入强度，或在左侧表格精确编辑"
+        )
+
+    def set_edit_context(self, sites, *, hops=(), cell_vectors=None,
+                         snap_step: float | None = None,
+                         anchor_offset: tuple[float, float] | None = None):
+        self._edit_sites = [(float(x), float(y), str(sub or "A")) for x, y, sub in sites]
+        self._edit_hops = [dict(h) for h in hops]
+        valid_rows = {int(h.get("row", -1)) for h in self._editable_hops()}
+        if self._active_hop_row not in valid_rows:
+            self._active_hop_row = None
+        if cell_vectors is not None:
+            self._cell_vectors = tuple(tuple(map(float, vector)) for vector in cell_vectors)
+        if anchor_offset is not None:
+            try:
+                ax, ay = map(float, anchor_offset)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("编辑元胞锚点必须是 (x, y) 坐标") from exc
+            if not (math.isfinite(ax) and math.isfinite(ay)):
+                raise ValueError("编辑元胞锚点必须是有限坐标")
+            self._edit_anchor_offset = (ax, ay)
+        else:
+            # set_edit_context is also used by isolated scenes in tests and
+            # plug-ins.  Do not accidentally keep an anchor belonging to a
+            # previous finite sample when such a caller does not provide one.
+            self._edit_anchor_offset = (0.0, 0.0)
+        if snap_step is not None:
+            self.snap_step = max(0.001, float(snap_step))
+        if self._data is not None:
+            self.set_data(self._data)
+
+    def snap_position(self, index: int, point: QPointF,
+                      drag_origin: QPointF | None = None) -> QPointF:
+        """Grid snap plus magnetic restoration/alignment candidates.
+
+        The fixed 0.25 grid cannot represent graphene's sqrt(3)/2 coordinate.
+        We therefore prefer nearby exact model coordinates and the drag origin,
+        while retaining the configurable grid as a fallback.  Alt still means
+        completely free movement.
+        """
+        if not self.snap_enabled:
+            return QPointF(point)
+        step = self.snap_step
+        # Snap in the primitive cell's local coordinates.  A central anchor
+        # for a slanted disk/hexagon cell is generally not a multiple of the
+        # grid (e.g. sqrt(3)/2); snapping in global scene coordinates would
+        # silently write those fractional offsets back into the site table.
+        anchor_x, anchor_y = self._edit_anchor_offset
+        grid = QPointF(
+            round((point.x() - anchor_x) / step) * step + anchor_x,
+            round((point.y() + anchor_y) / step) * step - anchor_y,
+        )
+        tolerance = max(0.08, step * 0.55)
+        collision_tolerance = max(0.03, min(0.12, tolerance * 0.8))
+        # Snap as a complete 2-D point.  The previous independent x/y
+        # candidates could combine coordinates from two different atoms and
+        # create a position that was not part of any lattice geometry.
+        # During a real drag, never magnetically snap one site onto another
+        # site's current position.  Besides being visually confusing, that
+        # creates duplicate rows and can make the topology appear to lose a
+        # bond after the next rebuild.  Programmatic callers (without a drag
+        # origin) still get the old complete-geometry candidate behaviour;
+        # this keeps the helper useful for previews and preserves its 2-D
+        # snapping semantics outside the interactive editor.
+        interactive_drag = drag_origin is not None
+        live_positions = [
+            (QPointF(float(x) + anchor_x, -float(y) - anchor_y), site_index)
+            for site_index, (x, y, _s) in enumerate(self._edit_sites)
+        ]
+        current_candidates: list[tuple[QPointF, int]] = []
+        for site_index, (x, y, _s) in enumerate(self._edit_sites):
+            if not interactive_drag or site_index == index:
+                current_candidates.append(
+                    (QPointF(float(x) + anchor_x, -float(y) - anchor_y), site_index)
+                )
+        candidates: list[QPointF] = [candidate for candidate, _owner in current_candidates]
+        for ref_index, (x, y) in enumerate(self._snap_reference_sites):
+            candidate = QPointF(x + anchor_x, -y - anchor_y)
+            if interactive_drag:
+                # A baseline target is useful for restoring a moved site, but
+                # not if that target is already occupied by a different live
+                # site.  Keep the ownership check in scene coordinates so it
+                # also works for oblique anchor offsets.
+                occupied = any(
+                    owner != index
+                    and math.hypot(candidate.x() - live.x(), candidate.y() - live.y())
+                    <= collision_tolerance
+                    for live, owner in live_positions
+                )
+                if occupied:
+                    continue
+            candidates.append(candidate)
+        if drag_origin is not None:
+            candidates.append(QPointF(drag_origin))
+        nearest = min(
+            candidates,
+            key=lambda candidate: math.hypot(
+                candidate.x() - point.x(), candidate.y() - point.y()
+            ),
+            default=None,
+        )
+        if nearest is not None and math.hypot(
+            nearest.x() - point.x(), nearest.y() - point.y()
+        ) <= tolerance:
+            return nearest
+        if interactive_drag:
+            # Keep the pointer responsive while enforcing a small visual
+            # clearance.  Returning the raw point on an exact neighbour hit
+            # still allowed duplicate coordinates; nudge that point away from
+            # the closest live site instead.  The nudge is scene-space and
+            # therefore works for oblique cells and non-unit coordinates.
+            def nudge_from_collisions(candidate: QPointF) -> QPointF:
+                adjusted = QPointF(candidate)
+                for live, owner in live_positions:
+                    if owner == index:
+                        continue
+                    dx = adjusted.x() - live.x()
+                    dy = adjusted.y() - live.y()
+                    distance = math.hypot(dx, dy)
+                    if distance >= collision_tolerance:
+                        continue
+                    if distance <= 1e-12:
+                        if 0 <= index < len(live_positions):
+                            dx = live_positions[index][0].x() - live.x()
+                            dy = live_positions[index][0].y() - live.y()
+                        distance = math.hypot(dx, dy)
+                    if distance <= 1e-12:
+                        dx, dy, distance = 1.0, 0.0, 1.0
+                    clearance = collision_tolerance + 0.02
+                    adjusted = QPointF(
+                        live.x() + dx / distance * clearance,
+                        live.y() + dy / distance * clearance,
+                    )
+                return adjusted
+
+            grid = nudge_from_collisions(grid)
+            # If the grid candidate collided, prefer a nudged pointer position
+            # so a fast drag does not snap to an unrelated lattice point.
+            if any(
+                owner != index
+                and math.hypot(grid.x() - live.x(), grid.y() - live.y())
+                <= collision_tolerance
+                for live, owner in live_positions
+            ):
+                return nudge_from_collisions(QPointF(point))
+        return grid
+
+    def set_edit_mode(self, enabled: bool):
+        self.edit_mode = bool(enabled)
+        self.set_hop_creation_mode(False, announce=False)
+        self.set_site_creation_mode(False, announce=False)
+        if self.edit_mode:
+            # Each edit session starts structure-first.  This is view-only;
+            # the user's persistent normal-view display preferences remain
+            # untouched and return as soon as editing ends.
+            self._show_edit_details = False
+        else:
+            self._active_hop_row = None
+        if self._data is not None:
+            self.set_data(self._data)
+
+    @property
+    def hop_creation_mode(self) -> bool:
+        return self._hop_creation_mode
+
+    @property
+    def site_creation_mode(self) -> bool:
+        return self._site_creation_mode
+
+    def set_site_creation_mode(self, enabled: bool, *, announce: bool = True) -> None:
+        """Enter/leave the deliberate one-click site creation tool."""
+        enabled = bool(enabled) and self.edit_mode
+        if enabled:
+            self.set_hop_creation_mode(False, announce=False)
+        if enabled == self._site_creation_mode:
+            return
+        self._site_creation_mode = enabled
+        self.siteCreationModeChanged.emit(enabled)
+        if announce:
+            self.editSelectionChanged.emit(
+                "添加格点：请在晶格空白处单击；Esc 或再次点击“添加格点”取消"
+                if enabled else "已退出添加格点；单击格点仅选择，拖动即可移动"
+            )
+
+    def set_hop_creation_mode(self, enabled: bool, *, announce: bool = True) -> None:
+        """Enter/leave the deliberate two-site bond creation tool.
+
+        Normal clicks remain harmless selection clicks.  Keeping this state
+        in the scene also makes it impossible for an invisible stale start
+        site to survive a redraw or a mode switch.
+        """
+        enabled = bool(enabled) and self.edit_mode
+        if enabled:
+            self.set_site_creation_mode(False, announce=False)
+        if enabled == self._hop_creation_mode and self._hop_start is None:
+            return
+        self._hop_creation_mode = enabled
+        self._hop_start = None
+        self._hop_start_endpoint = None
+        for ghost in self._ghost_items:
+            ghost.set_interaction_enabled(enabled)
+        for item in self._edit_items.values():
+            item.setOpacity(1.0)
+        self.hopCreationModeChanged.emit(enabled)
+        if announce:
+            message = (
+                "添加跃迁：依次点击两个格点（半无限可点左右虚影自动生成胞间偏移）；"
+                "再次点击“添加跃迁”或按 Esc 取消"
+                if enabled else "已退出添加跃迁；单击格点仅选择，拖动即可移动"
+            )
+            self.editSelectionChanged.emit(message)
+
+    def activate_site(self, index: int):
+        if not self.edit_mode:
+            return
+        if not self._hop_creation_mode:
+            # Do not overload selection as a destructive / modal operation.
+            self.editSelectionChanged.emit(
+                f"已选择格点 {index + 1}；拖动可移动，Delete 可删除；"
+                "如需连线请先点击“添加跃迁”"
+            )
+            return
+        self._activate_hop_endpoint(index, 0, 0)
+
+    def activate_ghost(self, index: int, cell_dx: int, cell_dy: int):
+        """Use a visible periodic image as an explicit bond endpoint."""
+        if not self.edit_mode or not self._hop_creation_mode:
+            return
+        self._activate_hop_endpoint(index, int(cell_dx), int(cell_dy))
+
+    def _activate_hop_endpoint(self, index: int, cell_dx: int, cell_dy: int):
+        """Collect two logical endpoints and emit their relative cell offset."""
+        index = int(index)
+        if not 0 <= index < len(self._edit_sites):
+            self.editSelectionChanged.emit("该格点不属于当前可编辑元胞")
+            return
+        if self._hop_start is None:
+            self._hop_start = index
+            self._hop_start_endpoint = (index, int(cell_dx), int(cell_dy))
+            where = (
+                "中心元胞" if (cell_dx, cell_dy) == (0, 0)
+                else f"元胞偏移 ({cell_dx:+d}, {cell_dy:+d})"
+            )
+            self.editSelectionChanged.emit(
+                f"已选择起点 格点 {index + 1}（{where}）；请选择终点"
+            )
+            return
+        start = self._hop_start
+        start_endpoint = self._hop_start_endpoint or (start, 0, 0)
+        self._hop_start = None
+        self._hop_start_endpoint = None
+        relative = (
+            int(cell_dx) - int(start_endpoint[1]),
+            int(cell_dy) - int(start_endpoint[2]),
+        )
+        # A self-hop with a non-zero cell offset is a valid Bloch term; only
+        # reject an identical primitive site in the identical cell.
+        if start != index or relative != (0, 0):
+            if relative == (0, 0):
+                self.hoppingRequested.emit(start, index)
+            else:
+                self.hoppingRequestedWithOffset.emit(
+                    start, index, relative[0], relative[1],
+                )
+            # A single bond is one explicit action.  Returning immediately
+            # to normal selection avoids a latent second creation operation.
+            self.set_hop_creation_mode(False, announce=False)
+            self.editSelectionChanged.emit("已提交跃迁；单击格点仅选择，拖动即可移动")
+        else:
+            self._hop_start = start
+            self._hop_start_endpoint = start_endpoint
+            self.editSelectionChanged.emit(
+                "起点与终点是同一元胞格点；请选择另一格点或周期像，或取消添加跃迁"
+            )
+
+    def delete_selected(self) -> bool:
+        if not self.edit_mode:
+            return False
+        selected = [item for item in self.selectedItems() if isinstance(item, _EditableSiteItem)]
+        if not selected:
+            return False
+        self.siteDeleteRequested.emit(selected[0].site_index)
+        return True
+
+    def _append_site_at(self, scene_point: QPointF) -> None:
+        """Emit one local primitive-cell coordinate for the explicit tool."""
+        step = self.snap_step
+        anchor_x, anchor_y = self._edit_anchor_offset
+        x = round((scene_point.x() - anchor_x) / step) * step
+        y = round((-scene_point.y() - anchor_y) / step) * step
+        self.set_site_creation_mode(False, announce=False)
+        self.siteAddRequested.emit(float(x), float(y))
+        self.editSelectionChanged.emit(
+            f"已添加格点 ({x:g}, {y:g})；拖动可调整，表格可精确检查"
+        )
+
+    def mousePressEvent(self, event):
+        if (self.edit_mode and self._site_creation_mode
+                and event.button() == Qt.LeftButton):
+            # A creation click must target an actual blank position, not
+            # consume a site or a coefficient input that the user meant to
+            # inspect.  Cell outlines and bonds are allowed here: they are
+            # visual context rather than editable controls.
+            hit = self.items(event.scenePos())
+            if any(isinstance(item, (_EditableSiteItem, QGraphicsProxyWidget))
+                   for item in hit):
+                self.editSelectionChanged.emit(
+                    "请在没有格点或输入框的空白处单击；Esc 可取消添加格点"
+                )
+            else:
+                self._append_site_at(event.scenePos())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        # Double click deliberately has no mutation semantics.  It used to
+        # add a site on a best-effort "blank" hit test, which felt random on
+        # dense lattices and could be mistaken for a disappearing connection.
+        if self.edit_mode:
+            self.editSelectionChanged.emit(
+                "双击不会修改晶格；需要新增格点请先启用“添加格点”"
+            )
+        event.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and self._hop_creation_mode:
+            self.set_hop_creation_mode(False)
+            event.accept()
+            return
+        if event.key() == Qt.Key_Escape and self._site_creation_mode:
+            self.set_site_creation_mode(False)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def set_data(self, data: LatticeSceneData):
+        self._data = data
+        # A rebuild invalidates the old hover target.  Keeping it would make
+        # an unrelated new field inherit a leader highlight after a parameter
+        # change or theme switch.
+        self._hovered_hop_row = None
+        self._focused_hop_row = None
+        # QGraphicsProxyWidget embeds a real QWidget into the scene.  Merely
+        # dropping our Python references before ``scene.clear()`` is not
+        # sufficient on the offscreen/Windows paint paths: the old child can
+        # keep one stale backing-store frame at its previous position.  After
+        # a fit or a tab switch that frame looks like a second row of editors,
+        # often clipped by the bottom edge of the viewport.  Hide and detach
+        # every embedded widget first, then let Qt dispose it after the
+        # current event is finished.  This keeps rebuilds and theme changes
+        # visually atomic without changing the editor's public signals.
+        old_proxies = tuple(self._edit_proxies)
+        for proxy in old_proxies:
+            widget = proxy.widget()
+            if widget is not None:
+                widget.hide()
+                proxy.setWidget(None)
+                widget.deleteLater()
+                # ``deleteLater`` is intentionally deferred during normal
+                # interaction, but a rebuild can be immediately followed by
+                # a grab/tab switch before the event loop gets another turn.
+                # Flush only this widget's deferred delete, never the global
+                # queue, so dialogs and unrelated controls keep their normal
+                # Qt lifecycle.
+                QCoreApplication.sendPostedEvents(widget, QEvent.DeferredDelete)
+        self._edit_proxies.clear()
+        self._ghost_items.clear()
+        self._edit_guides.clear()
+        self._edit_leaders.clear()
+        self._edit_leader_links.clear()
+        self._edit_proxy_anchors.clear()
+        self.clear()
+        pal = Palette()
+        if not data.sites:
+            self.setSceneRect(QRectF())
+            return
+
+        # 坐标范围 → 场景尺寸
+        # Qt 场景 y 轴向下；统一用 -physical_y，保证物理图像 y 轴向上。
+        all_pts = [(s[0], -s[1]) for s in data.sites]
+        if self._show_ghosts:
+            all_pts += [(g[0], -g[1]) for g in data.ghost]
+        # Keep the explicit finite-mask outline inside the scene rect.  This
+        # matters for a coarse disk/triangle where the outer polygon can sit a
+        # little beyond the centre of the boundary cells.
+        all_pts += [(point[0], -point[1]) for point in data.boundary_outline]
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        pad = 0.7
+        x0, x1 = min(xs) - pad, max(xs) + pad
+        y0, y1 = min(ys) - pad, max(ys) + pad
+        # Editing uses a dedicated right-hand coefficient rail. Reserve a
+        # scene-space pocket for it before the view fits the lattice; without
+        # this margin the rail is forced on top of the rightmost physical
+        # nodes in finite OBC samples (especially NP/Kagome).
+        if self.edit_mode and self._editable_hops():
+            # Keep a generous scene-space pocket: the proxy is fixed in
+            # screen pixels, so a percentage-only margin becomes too small
+            # for compact semi-infinite samples after a 180% UI scale.  The
+            # absolute floor covers the widest styled editor plus its gap,
+            # node radius and edge cushion at the smallest normal zoom.
+            rail_reserve = max(2.4, 0.28 * (x1 - x0))
+            x1 += rail_reserve
+        self.setSceneRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+
+        # A non-rectangular sample should identify itself in the canvas.  The
+        # badge is deliberately anchored to the scene margin (not to a cell
+        # or a node), so it remains visible after zooming/panning without
+        # covering the physical Kagome skeleton.  Keep it as a scene item so
+        # exports and the combined view carry the same unambiguous context.
+        if (data.boundary_outline and len(data.boundary_outline) == 3
+                and getattr(data, "title", "")):
+            badge = QGraphicsTextItem("正三角纳米盘 · 平直等边边界")
+            badge_font = QFont("Cambria Math")
+            badge_font.setPointSizeF(10.0)
+            badge.setFont(badge_font)
+            badge_outline = (0.38, 0.68, 0.92) if self._dark else (0.18, 0.42, 0.68)
+            badge.setDefaultTextColor(_q(badge_outline))
+            bounds = badge.boundingRect()
+            if bounds.width() > 0:
+                # Keep the physical badge compact across models with very
+                # different cell scales; it follows view zoom like the
+                # matrix/lattice labels instead of becoming a giant overlay.
+                target_width = min(3.4, max(1.8, 0.28 * (x1 - x0)))
+                badge.setScale(target_width / bounds.width())
+            badge.setPos(x0 + 0.18, y0 + 0.16)
+            badge.setZValue(5.0)
+            badge.setData(0, "finite-shape-badge")
+            badge.setToolTip("双开边界正三角形纳米盘；三条边为平直等边边界")
+            self.addItem(badge)
+
+        # 元胞框 (z=0): 首胞实线高亮, 其余灰虚线 (MATLAB §6.3)
+        outline = (0.38, 0.68, 0.92) if self._dark else (0.18, 0.42, 0.68)
+        secondary_outline = (0.48, 0.53, 0.60) if self._dark else (0.55, 0.58, 0.62)
+        for k, (bx, by, bw, bh) in enumerate(
+            data.cell_boxes if self._show_cells else ()
+        ):
+            item = QGraphicsRectItem(bx - 0.5, -(by - 0.5 + bh), bw, bh)
+            if k == 0:
+                item.setPen(_pen(outline, 1.35))
+                item.setBrush(QBrush(_alpha_over((0.72, 0.78, 0.95), 24, self._blend_base)))
+            else:
+                item.setPen(_pen(secondary_outline, 0.75, Qt.DashLine))
+                item.setBrush(Qt.NoBrush)
+            item.setZValue(0)
+            self.addItem(item)
+        # A complete grid of oblique primitive-cell outlines is helpful for a
+        # tiny sample, but on a 5×5+ triangular/hexagonal disk it becomes a
+        # second, dashed lattice that competes with the physical hopping
+        # skeleton.  Keep the first cell as an explicit blue "primitive
+        # cell" cue and let the unambiguous finite-sample silhouette carry
+        # the rest of the geometry.  The DTO still contains every polygon for
+        # editing/export; this is presentation-only progressive disclosure.
+        polygons = data.cell_polygons if self._show_cells else ()
+        if len(polygons) > 12:
+            polygons = polygons[:1]
+        for k, polygon in enumerate(polygons):
+            item = QGraphicsPolygonItem(QPolygonF([QPointF(x, -y) for x, y in polygon]))
+            if k == 0:
+                item.setPen(_pen(outline, 1.35))
+                item.setBrush(QBrush(_alpha_over((0.72, 0.78, 0.95), 24, self._blend_base)))
+                item.setToolTip("原始元胞（一个平移单元）")
+            else:
+                item.setPen(_pen(secondary_outline, 0.75, Qt.DashLine))
+                item.setBrush(Qt.NoBrush)
+            item.setZValue(0)
+            self.addItem(item)
+
+        # Non-rectangular samples get one clear physical silhouette in
+        # addition to the individual primitive-cell outlines.  Without this
+        # layer a sparse triangle/disk can look like a rectangular collection
+        # of cells, especially when the cell-outline toggle is disabled.
+        if data.boundary_outline:
+            item = QGraphicsPolygonItem(
+                QPolygonF([QPointF(x, -y) for x, y in data.boundary_outline])
+            )
+            item.setPen(_pen(outline, 1.8))
+            item.setBrush(Qt.NoBrush)
+            item.setZValue(0.35)
+            item.setData(0, "finite-shape-outline")
+            self.addItem(item)
+
+        # 键 (z=1): NN 实线红 / NNN 虚线绿。编辑态优先让用户看清
+        # 最近邻骨架；次近邻仍保留且可点，但退到背景层，避免密集模型
+        # 看起来像所有连接同等重要的一张线网。
+        pos = {i: (x, y) for i, (x, y, _l, _s) in enumerate(data.sites)}
+        show_edit_details = (not self.edit_mode) or self._show_edit_details
+        for i, j, kind in data.edges:
+            if (kind == "NN" and not self._show_nn) or (
+                kind != "NN" and (not self._show_nnn or not show_edit_details)
+            ):
+                continue
+            if i not in pos or j not in pos:
+                continue
+            x1, y1 = pos[i]
+            x2, y2 = pos[j]
+            y1, y2 = -y1, -y2
+            line = QGraphicsLineItem(x1, y1, x2, y2)
+            rgb = pal.edge_nn if kind == "NN" else pal.edge_nnn
+            pen = _pen(rgb, 2.0 if kind == "NN" else 1.15)
+            if kind != "NN":
+                pen.setStyle(Qt.DashLine)
+            line.setPen(pen)
+            # NNN/long-range bonds are useful physical context, but drawing
+            # them at the same visual weight as the NN skeleton makes dense
+            # honeycomb/Kagome views look like an unstructured green mesh.
+            # Keep the layer available (the display toggle can still hide it)
+            # while lowering its normal-view contrast; edit mode remains even
+            # quieter until the explicit detail switch is enabled.
+            line.setOpacity(1.0 if kind == "NN" else (0.24 if self.edit_mode else 0.38))
+            line.setZValue(1.0 if kind == "NN" else 0.8)
+            line.setData(0, "physical-edge-nn" if kind == "NN" else "physical-edge-nnn")
+            self.addItem(line)
+
+        # 虚影键 (z=1.5, 黯淡): MATLAB cNN*0.5+0.5 / cNNN*0.4+0.6
+        for x1, y1, x2, y2, kind in (
+            data.ghost_edges if self._show_ghosts else ()
+        ):
+            if (kind == "NN" and not self._show_nn) or (
+                kind != "NN" and (not self._show_nnn or not show_edit_details)
+            ):
+                continue
+            y1, y2 = -y1, -y2
+            line = QGraphicsLineItem(x1, y1, x2, y2)
+            if kind == "NN":
+                pen = _pen(_blend(pal.edge_nn, 0.5, 0.5), 1.2)
+            else:
+                pen = _pen(_blend(pal.edge_nnn, 0.4, 0.6), 1.0, Qt.DashLine)
+            line.setPen(pen)
+            line.setOpacity(
+                0.72 if kind == "NN" else (0.12 if self.edit_mode else 0.20)
+            )
+            line.setZValue(0.7 if kind == "NN" else 0.6)
+            line.setData(0, "ghost-edge-nn" if kind == "NN" else "ghost-edge-nnn")
+            self.addItem(line)
+
+        # 格点 (z=3) + 序号 (z=4)
+        # 半径相对当前模型最短键长定义，不依赖绝对坐标尺度。
+        bond_lengths = []
+        for i, j, _kind in data.edges:
+            if i in pos and j in pos:
+                x1, y1 = pos[i]
+                x2, y2 = pos[j]
+                length = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+                if length > 1e-12:
+                    bond_lengths.append(length)
+        # Keep the node as a readable anchor rather than a giant selection
+        # halo. The previous 0.16 ratio made compact honeycomb/Kagome views
+        # look like overlapping bubbles once edit handles and fields were on.
+        r = 0.12 * min(bond_lengths) if bond_lengths else 0.14
+        self._site_radius = r
+        for _idx, (x, y, label, sub) in enumerate(data.sites):
+            y = -y
+            rgb = pal.site_a if sub == "A" else pal.site_b
+            circ = QGraphicsEllipseItem(x - r, y - r, 2 * r, 2 * r)
+            circ.setBrush(QBrush(_q(rgb)))
+            circ.setPen(_pen((0.75, 0.8, 0.85) if self._dark else (0, 0, 0), 0.6))
+            circ.setZValue(3)
+            self.addItem(circ)
+            if not self.edit_mode:
+                t = QGraphicsTextItem(str(label))
+                t.setDefaultTextColor(QColor(255, 255, 255))
+                font = QFont()
+                font.setPointSizeF(6.5)
+                font.setBold(True)
+                t.setFont(font)
+                _fit_text_to_circle(t, x, y, 2 * r)
+                t.setZValue(4)
+                self.addItem(t)
+
+        # 虚影格点 (z=2, 半透明 + 黯淡序号).  Newer scene DTOs carry the
+        # logical source/offset metadata so these images can be selected by
+        # the explicit bond tool.  Keep the three-column fallback for plug-ins
+        # and older callers that construct LatticeSceneData directly.
+        rich_ghosts = data.ghost_sites or ()
+        if self._show_ghosts and rich_ghosts:
+            for x, y, label, source_site, cell_dx, cell_dy in rich_ghosts:
+                item = _GhostSiteItem(
+                    self, x, y, r, source_site, cell_dx, cell_dy,
+                )
+                item.set_interaction_enabled(self._hop_creation_mode)
+                self.addItem(item)
+                self._ghost_items.append(item)
+                if not self.edit_mode:
+                    t = QGraphicsTextItem(str(label))
+                    t.setDefaultTextColor(QColor(255, 255, 255))
+                    font = QFont()
+                    font.setPointSizeF(6.0)
+                    font.setBold(True)
+                    t.setFont(font)
+                    t.setOpacity(0.6)
+                    _fit_text_to_circle(t, x, -y, 2 * r)
+                    t.setZValue(2.5)
+                    self.addItem(t)
+        elif self._show_ghosts:
+            for x, y, label in data.ghost:
+                y = -y
+                circ = QGraphicsEllipseItem(x - r, y - r, 2 * r, 2 * r)
+                circ.setBrush(QBrush(_q(pal.site_ghost)))
+                circ.setPen(_pen((0, 0, 0), 0.6))
+                circ.setOpacity(0.45)
+                circ.setZValue(2)
+                self.addItem(circ)
+                if not self.edit_mode:
+                    t = QGraphicsTextItem(str(label))
+                    t.setDefaultTextColor(QColor(255, 255, 255))
+                    font = QFont()
+                    font.setPointSizeF(6.0)
+                    font.setBold(True)
+                    t.setFont(font)
+                    t.setOpacity(0.6)
+                    _fit_text_to_circle(t, x, y, 2 * r)
+                    t.setZValue(2.5)
+                    self.addItem(t)
+
+        if self.edit_mode:
+            self._draw_edit_handles()
+            self._draw_edit_hop_controls()
+            # Rebuilds triggered by “显示全部系数” happen after the view has
+            # already been fitted.  Reflow immediately against the active
+            # view transform; otherwise the newly created fixed-pixel proxies
+            # briefly remain at their bond-local anchors instead of the right
+            # rail until the next resize/zoom event.
+            self._reflow_editors()
+
+    def _draw_edit_handles(self):
+        """Overlay only the unit-cell sites; expanded copies stay read-only."""
+        self._edit_items.clear()
+        anchor_x, anchor_y = self._edit_anchor_offset
+        for index, (x, y, sub) in enumerate(self._edit_sites):
+            item = _EditableSiteItem(
+                self, index, x + anchor_x, y + anchor_y,
+                radius=self._site_radius * 1.1,
+            )
+            color = QColor("#1677ff") if sub == "A" else QColor("#f26b38")
+            item.setBrush(QBrush(color))
+            # Cosmetic pen means a true two-pixel outline.  A regular width=2
+            # pen is two *scene units* wide and becomes a giant white halo at
+            # the fit scale used by small-coordinate lattices.
+            item.setPen(_pen((1.0, 1.0, 1.0), 2.0))
+            self.addItem(item)
+            self._edit_items[index] = item
+
+    def _editable_hops(self) -> list[dict]:
+        """Return valid non-onsite hopping rows eligible for canvas editing."""
+        eligible: list[dict] = []
+        for hop in self._edit_hops:
+            fr, to = int(hop.get("from_site", -1)), int(hop.get("to_site", -1))
+            ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
+            if not (0 <= fr < len(self._edit_sites) and 0 <= to < len(self._edit_sites)):
+                continue
+            if fr == to and ox == 0 and oy == 0:
+                continue
+            eligible.append(hop)
+        return eligible
+
+    def _primary_editable_rows(self, hops: list[dict]) -> set[int]:
+        """Rows in the shortest non-onsite geometrical hopping shell.
+
+        This is only an edit-layer visibility decision.  It intentionally
+        does not infer, filter or mutate the physical Hamiltonian terms.
+        """
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
+        lengths: list[tuple[int, float]] = []
+        for hop in hops:
+            fr, to = int(hop["from_site"]), int(hop["to_site"])
+            ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
+            x1, y1, _ = self._edit_sites[fr]
+            x2, y2, _ = self._edit_sites[to]
+            length = math.hypot(x2 + ox * a1x + oy * a2x - x1,
+                                y2 + ox * a1y + oy * a2y - y1)
+            if length > 1e-12:
+                lengths.append((int(hop.get("row", -1)), length))
+        if not lengths:
+            return set()
+        nearest = min(length for _row, length in lengths)
+        return {row for row, length in lengths if length <= nearest * 1.05 + 1e-12}
+
+    def _draw_edit_hop_controls(self):
+        """Draw quiet click targets and only the editors that are needed."""
+        editable = self._editable_hops()
+        if not editable:
+            return
+        rows = {int(hop.get("row", -1)) for hop in editable}
+        if self._active_hop_row not in rows:
+            self._active_hop_row = None
+        # Small models remain pleasantly direct: all up to three strengths
+        # are visible. Dense Kagome/NP/long-range models use progressive
+        # disclosure by default: click a source-cell bond to open one field.
+        if self._show_all_hop_editors or len(editable) <= 3:
+            visible_rows = rows
+        elif self._active_hop_row is None:
+            visible_rows = set()
+        else:
+            visible_rows = {self._active_hop_row}
+        # Hidden detail bonds must not leave invisible mouse targets above
+        # nearest-neighbour lines.  That used to make a visible red bond
+        # unexpectedly open a distant NNN coefficient in dense Kagome views.
+        guide_rows = (
+            rows if self._show_edit_details or self._show_all_hop_editors
+            else self._primary_editable_rows(editable)
+        )
+        if not self._show_edit_details and not self._show_all_hop_editors:
+            visible_rows &= guide_rows
+
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
+        # Keep the physical translation of the editable cell immutable for
+        # the whole loop.  ``editor_anchor_*`` below is only the temporary
+        # screen-space offset for one coefficient field; reusing the same
+        # variable used to shift every subsequent bond after the first one.
+        base_anchor_x, base_anchor_y = self._edit_anchor_offset
+        midpoint_slots: dict[tuple[int, int], int] = {}
+        for hop in editable:
+            row = int(hop.get("row", -1))
+            fr, to = int(hop["from_site"]), int(hop["to_site"])
+            ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
+            x1, y1, _ = self._edit_sites[fr]
+            x2, y2, _ = self._edit_sites[to]
+            x1 += base_anchor_x
+            y1 += base_anchor_y
+            x2 += base_anchor_x + ox * a1x + oy * a2x
+            # Both primitive vectors contribute to the endpoint.  The old
+            # expression omitted ``off_x * a1y``, so a user-edited oblique
+            # a1 vector kept the guide/editor on the wrong horizontal level
+            # even though the Hamiltonian used the correct displacement.
+            y2 += base_anchor_y + ox * a1y + oy * a2y
+            mx, my = (x1 + x2) / 2, -(y1 + y2) / 2
+
+            if row in guide_rows:
+                guide = _EditableHopGuide(self, row, x1, -y1, x2, -y2)
+                guide.set_selected(row == self._active_hop_row)
+                self.addItem(guide)
+                self._edit_guides.append(guide)
+            if row not in visible_rows:
+                continue
+
+            editor = _HopStrengthEdit(f"{float(hop.get('strength', 1.0)):.8g}")
+            editor.setObjectName("hopStrengthEditor")
+            editor.owner_scene = self
+            # Resolve the active stylesheet before fixing the proxy size so
+            # the input's complete border and hit target always agree.
+            editor.ensurePolished()
+            metrics = editor.fontMetrics()
+            width = max(68, min(96, metrics.horizontalAdvance("−1.234") + 10))
+            styled_height = max(
+                editor.sizeHint().height(), editor.minimumSizeHint().height(),
+                metrics.height() + 12,
+            )
+            height = max(26, min(36, int(styled_height)))
+            editor.setFixedSize(width, height)
+            editor.setAlignment(Qt.AlignCenter)
+            # Do not install QDoubleValidator here: it rejects the perfectly
+            # valid ``1/3`` form while the side-panel parameter editor accepts
+            # it.  Validation is performed on commit by the shared safe
+            # scalar parser below; keeping the field permissive also allows a
+            # user to type the slash in two keystrokes without the validator
+            # fighting the intermediate text.
+            editor.setPlaceholderText("例如 1/3")
+            from_site_label = fr + 1
+            to_site_label = to + 1
+            boundary_label = (
+                "胞内" if (ox == 0 and oy == 0)
+                else f"胞间 ({ox:+d}, {oy:+d})"
+            )
+            editor.setToolTip(
+                f"跃迁 {row + 1}：格点 {from_site_label} → {to_site_label}，"
+                f"{boundary_label}\n"
+                "输入绝对跃迁强度（支持小数或分数，如 1/3）；"
+                "同名键自动化为最简整数比。悬停物理键可查看对应引线。"
+            )
+            editor.editingFinished.connect(
+                lambda r=row, field=editor: self._commit_hop_strength(r, field)
+            )
+            editor.setProperty("hvisualizer-original-strength", float(hop.get("strength", 1.0)))
+            proxy = QGraphicsProxyWidget()
+            proxy.setWidget(editor)
+            proxy.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+            proxy.setData(0, "hopping-editor")
+            proxy.setData(1, row)
+            editor.setProperty("hvisualizer-hop-row", row)
+            editor.hoverEntered.connect(
+                lambda selected_row=row: self._set_hovered_hop_row(selected_row)
+            )
+            editor.hoverLeft.connect(
+                lambda: self._set_hovered_hop_row(None)
+            )
+            editor.focusEntered.connect(
+                lambda selected_proxy=proxy: self._set_editor_focus_state(
+                    selected_proxy, True,
+                )
+            )
+            editor.focusLeft.connect(
+                lambda selected_proxy=proxy: self._set_editor_focus_state(
+                    selected_proxy, False,
+                )
+            )
+
+            dx, dy = x2 - x1, -(y2 - y1)
+            length = math.hypot(dx, dy)
+            nx, ny = (-dy / length, dx / length) if length > 1e-12 else (0.0, -1.0)
+            slot_key = (round(mx * 1000), round(my * 1000))
+            slot = midpoint_slots.get(slot_key, 0)
+            midpoint_slots[slot_key] = slot + 1
+            side = 1.0 if slot % 2 == 0 else -1.0
+            offset = 0.20 + 0.14 * (slot // 2)
+            editor_anchor_x = mx + side * nx * offset
+            editor_anchor_y = my + side * ny * offset
+
+            # The coefficient rail uses a two-segment leader: a diagonal
+            # pointer leaves the physical bond, then a short horizontal run
+            # enters the right-hand input column.  Keeping the segments
+            # separate makes the intended routing obvious and avoids the
+            # misleading single bent-looking line from the old layout.
+            leader_pen = _pen(
+                (0.28, 0.58, 0.72) if self._dark else (0.28, 0.48, 0.68),
+                0.9, Qt.DashLine,
+            )
+            diagonal = QGraphicsLineItem(mx, my, mx, my)
+            horizontal = QGraphicsLineItem(mx, my, mx, my)
+            for leader, role in ((diagonal, "diagonal"), (horizontal, "horizontal")):
+                leader.setPen(leader_pen)
+                leader.setOpacity(0.62)
+                leader.setZValue(14.5)
+                leader.setAcceptedMouseButtons(Qt.NoButton)
+                leader.setData(0, f"hopping-editor-leader-{role}")
+                self.addItem(leader)
+                self._edit_leaders.append(leader)
+
+            proxy.setPos(editor_anchor_x, editor_anchor_y)
+            proxy.setZValue(25)
+            self.addItem(proxy)
+            self._edit_proxies.append(proxy)
+            self._edit_leader_links.append((diagonal, horizontal, mx, my, proxy))
+            self._edit_proxy_anchors.append((proxy, editor_anchor_x, editor_anchor_y))
+
+    def _ensure_editor_visible(self, proxy: QGraphicsProxyWidget) -> None:
+        """Reveal a focused fixed-pixel editor in every visible lattice view.
+
+        A proxy can sit at the edge after the user pans or changes tabs.  Qt's
+        default focus handling does not always scroll a QGraphicsView for a
+        child widget, so the focused field may be only half visible even when
+        its stored anchor is valid.  Use the scene's own view list and a small
+        pixel margin; hidden comparison views are deliberately skipped.
+        """
+        for view in self.views():
+            if not view.isVisible() or view.viewport().size().isEmpty():
+                continue
+            view.ensureVisible(proxy, 12, 12)
+
+    def _reflow_editors(self):
+        """Re-run the fixed-pixel layout after a widget/DPI size change."""
+        if not self._edit_proxy_anchors:
+            return
+        for view in self.views():
+            if view.isVisible() and not view.viewport().size().isEmpty():
+                self.set_zoom_level(abs(float(view.transform().m11())), view)
+                return
+
+    def _set_editor_focus_state(self, proxy: QGraphicsProxyWidget, focused: bool) -> None:
+        """Keep the focused field above handles and reveal it in the view."""
+        # The right-hand rail keeps fields away from the physical handles.
+        # Once a field owns focus, its active border and text get an
+        # additional z-order lift so a nearby handle can never cover it.
+        proxy.setZValue(30.0 if focused else 25.0)
+        if focused:
+            row = proxy.data(1)
+            if row is not None:
+                self._focused_hop_row = int(row)
+                self._set_hovered_hop_row(int(row))
+            self._ensure_editor_visible(proxy)
+        else:
+            row = proxy.data(1)
+            widget = proxy.widget()
+            if row is not None and int(row) == self._focused_hop_row:
+                self._focused_hop_row = None
+            # If focus moved away while the pointer is still over the field,
+            # keep its leader until the normal leave event; otherwise clear it
+            # immediately so a stale line does not linger after tabbing out.
+            if (row is not None and int(row) == self._hovered_hop_row
+                    and not (widget is not None and widget.underMouse())):
+                self._set_hovered_hop_row(None)
+
+    def set_zoom_level(self, scale: float, source=None):
+        """Keep fixed-pixel editors in the right-hand rail while zooming.
+
+        Editors deliberately stay in one predictable column rather than
+        jumping among collision-search slots. The two-segment leaders retain
+        each true bond midpoint, so panning/zooming changes only the view
+        transform and never the logical association between a field and its
+        hopping term.
+        """
+        if not self._edit_proxy_anchors:
+            return
+        # One lattice scene is shared by the dedicated lattice tab and the
+        # combined matrix+lattice tab.  Their view transforms are different;
+        # letting a hidden view reposition the shared proxy widgets after the
+        # visible view has been fitted is what previously reintroduced
+        # overlaps and clipped-looking borders.  Only the active visible view
+        # is allowed to drive fixed-pixel layout.
+        if source is not None and not source.isVisible():
+            return
+        factor = max(1e-6, abs(float(scale)))
+        rect = self.sceneRect()
+        # The proxy ignores the view transform, so convert its *full* pixel
+        # dimensions to scene units only for the scene-rect fallback.  The
+        # stored anchor is the proxy's top-left (QGraphicsProxyWidget keeps
+        # that convention), not its centre.  Clamping by half the size leaves
+        # the lower/right half outside the scene and makes the editor appear
+        # clipped at the bottom edge of the canvas.
+        # Arrange fixed-pixel editors in screen-aware scene coordinates. A
+        # midpoint-only layout is technically deterministic but becomes
+        # unreadable when several bonds meet in one node: fields overlap one
+        # another, cover handles, and hide the very line they edit. Search a
+        # small set of nearby slots, keeping each field close to its bond
+        # while avoiding already placed fields and editable nodes.
+        node_rects = [item.sceneBoundingRect() for item in self._edit_items.values()
+                      if item.isVisible()]
+        entries = []
+        for proxy, x, y in self._edit_proxy_anchors:
+            if not proxy.isVisible():
+                continue
+            widget = proxy.widget()
+            width_px = float(widget.width() if widget is not None else 70.0)
+            height_px = float(widget.height() if widget is not None else 28.0)
+            width_scene, height_scene = width_px / factor, height_px / factor
+            entries.append((proxy, x, y, width_px, height_px,
+                            width_scene, height_scene))
+
+        # The coefficient rail is deliberately deterministic: every field is
+        # placed in a right-hand column and connected to its bond by a
+        # diagonal + horizontal dashed leader.  The previous local collision
+        # search could fall back to arbitrary scene-grid slots (including the
+        # bottom edge), which made editors appear detached and caused the
+        # lower border to be clipped in sparse custom models.
+        link_by_proxy = {
+            linked_proxy: (diagonal, horizontal, mx, my)
+            for diagonal, horizontal, mx, my, linked_proxy
+            in self._edit_leader_links
+        }
+        entries_with_midpoint = []
+        for proxy, x, y, width_px, height_px, width_scene, height_scene in entries:
+            link = link_by_proxy.get(proxy)
+            if link is None:
+                continue
+            entries_with_midpoint.append((
+                proxy, x, y, width_px, height_px, width_scene, height_scene,
+                link[2], link[3], link[0], link[1],
+            ))
+        # Keep the user's row order stable; focus only changes z-order, not
+        # the visual order of the right-hand coefficient list.
+        self._last_editor_layout = (factor, [])
+        gap_scene = 8.0 / factor
+        edge_margin = 14.0 / factor
+        min_x = rect.left() + edge_margin
+        max_x = rect.right() - edge_margin
+        # Prefer a column just outside the editable central copy.  Clamp to
+        # the scene's right edge so the complete widget remains clickable.
+        data_right = max(
+            (float(point[0]) for point in self._data.sites),
+            default=rect.left(),
+        )
+        if self._show_ghosts:
+            ghost_xs = [float(point[0]) for point in self._data.ghost]
+            if ghost_xs:
+                data_right = max(data_right, max(ghost_xs))
+        edit_rights = [
+            item.sceneBoundingRect().right()
+            for item in self._edit_items.values()
+            if item.isVisible()
+        ]
+        node_right = max(
+            [data_right + self._site_radius, *edit_rights],
+            default=rect.left(),
+        )
+        panel_gap = 0.42
+        rail_width = max(
+            (item[5] for item in entries_with_midpoint),
+            default=70.0 / factor,
+        )
+        # ``panel_right`` is the rail's right edge.  Keep the entire widget
+        # (not just its right edge) outside the physical lattice; otherwise
+        # the left half of a 70 px editor can still cover the last column.
+        panel_left = max(node_right + panel_gap, min_x)
+        panel_right = panel_left + rail_width
+        if panel_right > max_x:
+            panel_right = max_x
+            panel_left = panel_right - rail_width
+        available_height = max(1e-9, rect.height() - 2 * edge_margin)
+        total_height = sum(item[6] for item in entries_with_midpoint)
+        if entries_with_midpoint:
+            natural_gap = gap_scene
+            needed = total_height + natural_gap * (len(entries_with_midpoint) - 1)
+            if needed <= available_height:
+                rail_gap = natural_gap
+                start_y = rect.center().y() - needed / 2.0
+            else:
+                # Dense “show all” mode gets a compact single rail rather
+                # than scattered fields.  Keep a small gap whenever possible
+                # and let the focused field be revealed by ensureVisible().
+                rail_gap = max(1.0 / factor,
+                               (available_height - total_height)
+                               / max(1, len(entries_with_midpoint) - 1))
+                start_y = rect.top() + edge_margin
+        else:
+            rail_gap = gap_scene
+            start_y = rect.center().y()
+
+        placed: list[QRectF] = []
+        cursor_y = start_y
+        for (proxy, _x, _y, _width_px, _height_px, width_scene, height_scene,
+             mx, my, diagonal, horizontal) in entries_with_midpoint:
+            max_y = rect.bottom() - edge_margin - height_scene
+            py = min(max(cursor_y, rect.top() + edge_margin), max_y)
+            chosen = QRectF(panel_right - width_scene, py,
+                            width_scene, height_scene)
+            proxy.setPos(chosen.topLeft())
+            # Route the diagonal leader to a bend just left of the rail, then
+            # run horizontally into the field's left edge.  Both segments
+            # use cosmetic dashed pens, so zooming never changes readability.
+            # Keep a visible screen-space horizontal dash before the widget;
+            # using a raw scene-unit constant here made it collapse to a
+            # sub-pixel stub after zooming.
+            bend_x = chosen.left() - 10.0 / factor
+            bend_y = chosen.center().y()
+            diagonal.setLine(mx, my, bend_x, bend_y)
+            horizontal.setLine(bend_x, bend_y, chosen.left(), bend_y)
+            placed.append(chosen)
+            self._last_editor_layout[1].append((proxy, chosen, width_scene, height_scene))
+            cursor_y = py + height_scene + rail_gap
+        # Apply visibility only after all fields have been laid out.  In dense
+        # all-fields mode this hides the crossing mesh while preserving exact
+        # geometry for the one row the user is inspecting.
+        self._update_edit_leader_visibility()
+
+    def _commit_hop_strength(self, row: int, editor: QLineEdit):
+        try:
+            value = _parse_positive_strength(editor.text())
+        except ValueError as exc:
+            editor.setStyleSheet("border:1px solid #b00020;")
+            self.editSelectionChanged.emit(str(exc))
+            return
+        original = editor.property("hvisualizer-original-strength")
+        if original is not None and abs(value - float(original)) <= 1e-10:
+            # Losing focus while clicking another lattice element must not
+            # rebuild the scene when the user did not change the value.
+            editor.setStyleSheet("")
+            return
+        editor.setStyleSheet("")
+        # Keep the committed representation predictable for subsequent edits
+        # and screenshots while still preserving exact physics in the signal.
+        editor.setText(f"{value:.12g}")
+        editor.setProperty("hvisualizer-original-strength", value)
+        self.hoppingStrengthEdited.emit(int(row), value)

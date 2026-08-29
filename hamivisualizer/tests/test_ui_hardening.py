@@ -1009,6 +1009,20 @@ def test_honeycomb_strength_editor_normalizes_to_four_to_one():
     assert any("4*t" in str(hop.amplitude) for hop in ctrl._display_hops)
 
 
+def test_hopping_strength_uses_table_row_after_blank_row():
+    """A blank row must not shift the physical bond edited on the canvas."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    panel = win.panel
+    panel.hop_table.insertRow(0)
+    # The original first three rows now live at table rows 1, 2 and 3.
+    panel.set_hopping_strength(1, 1.2)
+    assert panel.hop_table.item(1, 5).text() == "-6*t"
+    assert panel.hop_table.item(2, 5).text() == "-5*t"
+    assert panel.hop_table.item(3, 5).text() == "-5*t"
+    assert panel.hop_table.item(0, 5) is None
+
+
 def test_edit_mode_renders_one_strength_editor_per_physical_bond():
     _app, win, ctrl = _window()
     ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))

@@ -1250,8 +1250,16 @@ class ControlPanel(QWidget):
         if not math.isfinite(strength) or strength <= 0:
             self.set_error("跃迁强度必须是正的有限数值")
             return
-        rows = self.get_hop_rows()
-        selected = rows[int(row)]
+        parsed_rows = self._get_hop_rows_with_indices()
+        selected_entry = next(
+            ((table_row, hop) for table_row, hop in parsed_rows
+             if table_row == int(row)),
+            None,
+        )
+        if selected_entry is None:
+            self.set_error("所选跃迁行为空或已失效，请重新选择跃迁线")
+            return
+        _selected_table_row, selected = selected_entry
         group_name = selected["name"]
         params = self.get_params()
         selected_expr = parse_expression(selected["amplitude"])
@@ -1259,17 +1267,20 @@ class ControlPanel(QWidget):
         parameter = free[0] if len(free) == 1 else (
             group_name if group_name.isidentifier() else "t"
         )
-        group_indices = [i for i, hop in enumerate(rows) if hop["name"] == group_name]
+        group_entries = [
+            (table_row, hop) for table_row, hop in parsed_rows
+            if hop["name"] == group_name
+        ]
         physical: dict[int, Fraction] = {}
         signs: dict[int, int] = {}
-        for index in group_indices:
-            value = evaluate_expression(rows[index]["amplitude"], params)
+        for table_row, hop in group_entries:
+            value = evaluate_expression(hop["amplitude"], params)
             if abs(value.imag) > 1e-9:
                 self.set_error("带复振幅的跃迁请使用 phase 列编辑，不能只改强度")
                 return
-            signs[index] = -1 if value.real < 0 else 1
-            magnitude = strength if index == int(row) else abs(value.real)
-            physical[index] = Fraction(f"{magnitude:.12g}").limit_denominator(100000)
+            signs[table_row] = -1 if value.real < 0 else 1
+            magnitude = strength if table_row == int(row) else abs(value.real)
+            physical[table_row] = Fraction(f"{magnitude:.12g}").limit_denominator(100000)
         denominator = 1
         for value in physical.values():
             denominator = math.lcm(denominator, value.denominator)
@@ -1284,12 +1295,12 @@ class ControlPanel(QWidget):
             return
         self.hop_table.blockSignals(True)
         try:
-            for index in group_indices:
-                ratio = int(physical[index] / base)
+            for table_row, _hop in group_entries:
+                ratio = int(physical[table_row] / base)
                 factor = "" if ratio == 1 else f"{ratio}*"
-                sign = "-" if signs[index] < 0 else ""
+                sign = "-" if signs[table_row] < 0 else ""
                 self.hop_table.setItem(
-                    index, 5, QTableWidgetItem(f"{sign}{factor}{parameter}")
+                    table_row, 5, QTableWidgetItem(f"{sign}{factor}{parameter}")
                 )
         finally:
             self.hop_table.blockSignals(False)
@@ -1298,7 +1309,14 @@ class ControlPanel(QWidget):
         self.set_error("")
         self._emit_changed()
 
-    def get_hop_rows(self) -> list[dict]:
+    def _get_hop_rows_with_indices(self) -> list[tuple[int, dict]]:
+        """Parse hopping rows while retaining their physical table indices.
+
+        Empty rows are intentionally ignored by the public model payload, but
+        their presence must not renumber an on-canvas coefficient editor.  The
+        editor emits the actual QTableWidget row, so keep that identity until
+        after all row-local validation and normalization is complete.
+        """
         rows = []
         for r in range(self.hop_table.rowCount()):
             vals = [self._cell(self.hop_table, r, c) for c in range(len(HOP_COLS))]
@@ -1325,7 +1343,7 @@ class ControlPanel(QWidget):
             sign = integer(8, "sign", "1")
             if sign not in {-1, 1}:
                 raise ValueError(f"跃迁表第 {r + 1} 行 sign 必须是 +1 或 -1")
-            rows.append({
+            rows.append((r, {
                 "name": vals[0].strip() or "t",
                 "from_site": integer(1, "from"),
                 "to_site": integer(2, "to"),
@@ -1335,8 +1353,12 @@ class ControlPanel(QWidget):
                 "phase_mode": phase_mode,
                 "phase": vals[7].strip() or "0",
                 "phase_sign": sign,
-            })
+            }))
         return rows
+
+    def get_hop_rows(self) -> list[dict]:
+        """Return validated hopping payloads without blank table rows."""
+        return [hop for _table_row, hop in self._get_hop_rows_with_indices()]
 
     # ---- 填充 (预设加载 / 模型打开) ----
 

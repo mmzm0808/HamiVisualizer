@@ -599,7 +599,7 @@ def main() -> int:
             # The scale control also reports its change in the status bar;
             # restore the operation feedback so every scale documents the
             # undo path rather than the harness setup.
-            window.statusBar().showMessage("已撤销：移动或编辑格点")
+            window.statusBar().showMessage("已撤销：恢复编辑前构型")
         if args.matrix_selection_demo or args.matrix_copy_demo:
             window.tabs.setCurrentIndex(1)
             window._on_matrix_cell_clicked(0, 1 if window.matrix_scene._data.n > 1 else 0)

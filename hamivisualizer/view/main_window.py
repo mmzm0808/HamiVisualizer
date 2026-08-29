@@ -76,6 +76,11 @@ class MainWindow(QMainWindow):
         self._active_index = -1
         self._switching = False
         self._history_replay = False
+        # One-shot semantic label for compound UI actions whose meaning is
+        # more precise than a structural diff (for example restoring the
+        # edit-session geometry).  It is consumed by the next committed
+        # snapshot and cleared even when applying that snapshot fails.
+        self._pending_history_label: str | None = None
         # Snapshot taken when lattice editing starts.  The explicit restore
         # action below only brings back geometry (sites + cell vectors), so
         # users can undo a bad snap without losing parameter/hopping edits.
@@ -668,7 +673,17 @@ class MainWindow(QMainWindow):
         else:
             dropped = 0
         try:
-            controller.apply_document(restored)
+            previous_label = self._pending_history_label
+            self._pending_history_label = "恢复编辑前构型"
+            try:
+                controller.apply_document(restored)
+            finally:
+                # ``document_committed`` consumes the pending label on a
+                # successful rebuild.  If validation fails before commit,
+                # restore the prior pending state rather than leaking this
+                # one-shot label into a later unrelated edit.
+                if self._pending_history_label == "恢复编辑前构型":
+                    self._pending_history_label = previous_label
         except (TypeError, ValueError) as exc:
             self.flash_status(f"恢复位置失败：{exc}")
             return
@@ -874,8 +889,10 @@ class MainWindow(QMainWindow):
             "band": self.band_scene._data, "wavefunction": self.wf_view._data,
         }
         if not self._switching and not self._history_replay:
+            label = self._pending_history_label
+            self._pending_history_label = None
             session.history.push(
-                document, self._describe_history_change(previous_document, document)
+                document, label or self._describe_history_change(previous_document, document)
             )
         self._update_history_actions()
         self._refresh_comparison()

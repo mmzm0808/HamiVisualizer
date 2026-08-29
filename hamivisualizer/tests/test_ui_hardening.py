@@ -804,14 +804,15 @@ def test_restore_edit_baseline_is_undoable_and_redoable(tmp_path):
 
     win._restore_edit_baseline()
     assert ctrl.current_document()["sites"] == baseline["sites"]
+    assert win._sessions[win._active_index].history.undo_label == "恢复编辑前构型"
 
     win.undo()
     assert ctrl.current_document()["sites"] == changed["sites"]
-    assert "移动或编辑格点" in win.statusBar().currentMessage()
+    assert "恢复编辑前构型" in win.statusBar().currentMessage()
 
     win.redo()
     assert ctrl.current_document()["sites"] == baseline["sites"]
-    assert "移动或编辑格点" in win.statusBar().currentMessage()
+    assert "恢复编辑前构型" in win.statusBar().currentMessage()
 
     # History replay must not leak into subsequent edits.
     changed_again = deepcopy(baseline)

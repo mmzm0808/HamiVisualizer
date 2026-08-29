@@ -1313,7 +1313,12 @@ class ControlPanel(QWidget):
                 return int(text)
 
             phase_mode = vals[6].strip() or "none"
-            if phase_mode not in {"none", "phase", "directional"}:
+            if phase_mode == "directional":
+                raise ValueError(
+                    f"跃迁表第 {r + 1} 行使用了尚未支持的方向依赖相位模式 "
+                    "directional；请改用 none（实跃迁）或 phase（固定相位）"
+                )
+            if phase_mode not in {"none", "phase"}:
                 raise ValueError(
                     f"跃迁表第 {r + 1} 行 phase_mode 无效：{phase_mode!r}"
                 )

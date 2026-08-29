@@ -142,7 +142,12 @@ class _Script(_Node):
     # rule.  In particular the x in e^{ik_x} remains above the main baseline.
     SCRIPT_SCALE: float = field(default=0.68, init=False, repr=False)
     SUPER_RAISE: float = field(default=0.54, init=False, repr=False)
-    SUB_DROP: float = field(default=0.26, init=False, repr=False)
+    # A nested subscript such as the ``x`` in ``e^{ik_x}`` is still part of
+    # the raised exponent.  The old 0.26 drop was visually closer to HTML's
+    # nested ``<sub>`` rule and pushed x toward the primary baseline.  0.16
+    # keeps the subscript clearly below k while preserving the optical height
+    # of the complete exponent on common Qt math fallbacks.
+    SUB_DROP: float = field(default=0.16, init=False, repr=False)
 
     def _script_font(self, font: QFont) -> QFont:
         return _scaled_font(font, self.SCRIPT_SCALE)
@@ -304,4 +309,3 @@ class MathTextItem(QGraphicsItem):
         painter.setRenderHint(QPainter.TextAntialiasing, True)
         self.layout.draw(painter, 0.0, 0.0, self.font, self.color)
         painter.restore()
-

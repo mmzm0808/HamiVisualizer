@@ -149,6 +149,24 @@ def test_matrix_math_layout_accepts_the_supported_tex_script_subset(source):
     assert metrics.height > 0
 
 
+def test_nested_bloch_subscript_stays_high_inside_raised_exponent():
+    """The x in e^{ik_x} must remain visually attached to k, not the base line."""
+    from PySide6.QtGui import QFontMetricsF
+    from hamivisualizer.view.math_text import MathLayout, math_font
+
+    font = math_font(24)
+    layout = MathLayout(r"e^{ik_{x}}")
+    outer = next(node for node in layout.lines[0].children
+                 if node.__class__.__name__ == "_Script")
+    inner = next(node for node in outer.superscript.children
+                 if node.__class__.__name__ == "_Script")
+    outer_raise = outer._offsets(font)[0]
+    inner_drop = inner._offsets(outer._script_font(font))[1]
+    assert inner_drop > 0
+    # The complete exponent remains materially above the main e baseline.
+    assert outer_raise + inner_drop < -0.30 * QFontMetricsF(font).ascent()
+
+
 def test_lattice_view_smoke():
     _app()
     data = LatticeSceneData(

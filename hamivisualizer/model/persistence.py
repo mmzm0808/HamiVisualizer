@@ -143,6 +143,9 @@ def validate_model_dict(obj: Any) -> dict:
         phase_mode = hop.get("phase_mode", "none")
         if phase_mode not in {"none", "phase", "directional"}:
             raise ValueError(f"hops[{i}].phase_mode 无效: {phase_mode!r}")
+        # Keep old documents loadable so the user can inspect and repair them,
+        # but make the unsupported mode explicit instead of silently treating
+        # it as a fixed phase.  The panel rejects it before a rebuild.
         sign = hop.get("phase_sign", 1)
         if sign not in {-1, 1} or isinstance(sign, bool):
             raise ValueError(f"hops[{i}].phase_sign 必须是 +1 或 -1")

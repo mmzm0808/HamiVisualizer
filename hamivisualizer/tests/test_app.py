@@ -493,6 +493,8 @@ def test_error_reported():
     win.panel.hop_table.item(0, 6).setText("directional")  # 未实现的相位模式
     ctrl.rebuild()
     assert win.panel.error_label.text() != ""
+    assert "directional" in win.panel.error_label.text()
+    assert "none" in win.panel.error_label.text()
 
 
 def test_semi_lattice_ghosts_np():

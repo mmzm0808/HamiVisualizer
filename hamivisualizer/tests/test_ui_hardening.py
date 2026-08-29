@@ -714,6 +714,8 @@ def test_edit_mode_can_restore_geometry_without_losing_hoppings_or_params():
     baseline = ctrl.current_document()
     win._set_lattice_edit_mode(True)
     assert not win.lattice_restore_btn.isHidden()
+    assert win.lattice_restore_btn.text() == "恢复编辑前构型"
+    assert "Ctrl+Z" in win.lattice_restore_btn.toolTip()
 
     rows = win.panel.get_site_rows()
     changed = list(rows)

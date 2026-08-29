@@ -127,9 +127,10 @@ class MainWindow(QMainWindow):
         self.lattice_redo_btn.setText("重做")
         self.lattice_redo_btn.setToolTip("重做刚撤销的修改（Ctrl+Shift+Z）")
         self.lattice_restore_btn = QToolButton()
-        self.lattice_restore_btn.setText("恢复原始构型")
+        self.lattice_restore_btn.setText("恢复编辑前构型")
         self.lattice_restore_btn.setToolTip(
-            "恢复进入编辑模式前的格点位置和元胞矢量；"
+            "只恢复进入编辑模式前的格点位置和元胞矢量；"
+            "参数与仍然有效的跃迁保留。需要完整回退请使用 Ctrl+Z；"
             "拖动时靠近原位置也会自动吸附回去。"
         )
         self.lattice_snap_btn = QToolButton()

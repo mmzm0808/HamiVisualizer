@@ -68,6 +68,10 @@ HOP_HEADERS = ["名称", "从", "到", "Δx", "Δy", "幅度", "相位模式", "
 # UI boundary instead of leaking into the Hamiltonian builder.
 HOP_ENDPOINT_COLUMNS = (1, 2)
 PARAM_COLS = ["参数", "数值", "滑块"]
+# Keep the unabridged cell text separate from the semantic relation marker
+# stored in ``Qt.UserRole``.  Qt may render long coordinates as an ellipsis at
+# 150–180% UI scale; this role lets the tooltip always expose the exact value.
+RAW_VALUE_ROLE = Qt.UserRole + 100
 
 # 参数滑块配置: name → (int_min, int_max, scale)  value = 滑块整数 × scale
 # φ 的数值列按 φ/π 显示 (MATLAB §2.1), scale 仍以弧度计。
@@ -695,7 +699,7 @@ class ControlPanel(QWidget):
             )
         self.kx_slider.valueChanged.connect(self._kx_changed)
         self.kx_edit.editingFinished.connect(self._kx_from_edit)
-        self.site_table.cellChanged.connect(lambda *_: self._emit_changed())
+        self.site_table.cellChanged.connect(self._site_cell_changed)
         self.lx_spin.valueChanged.connect(self._cell_size_changed)
         self.ly_spin.valueChanged.connect(self._cell_size_changed)
         self.apply_vectors_btn.clicked.connect(self._apply_cell_vectors)
@@ -1330,7 +1334,7 @@ class ControlPanel(QWidget):
                 factor = "" if ratio == 1 else f"{ratio}*"
                 sign = "-" if signs[table_row] < 0 else ""
                 self.hop_table.setItem(
-                    table_row, 5, QTableWidgetItem(f"{sign}{factor}{parameter}")
+                    table_row, 5, self._table_item(f"{sign}{factor}{parameter}")
                 )
         finally:
             self.hop_table.blockSignals(False)
@@ -1423,6 +1427,16 @@ class ControlPanel(QWidget):
         self._update_hop_relation_hint()
         self._emit_changed()
 
+    def _site_cell_changed(self, row: int, column: int) -> None:
+        """Refresh exact-value help after an inline table edit.
+
+        Coordinate columns stay compact so the single control rail remains
+        usable at high UI scale.  Qt may therefore elide the rendered text,
+        but hovering the cell must still reveal the exact parsed value.
+        """
+        self._set_raw_value_tooltip(self.site_table, row, column)
+        self._emit_changed()
+
     def _update_hop_relation_tooltips(self) -> None:
         """Attach per-row relation explanations without adding schema columns.
 
@@ -1453,6 +1467,13 @@ class ControlPanel(QWidget):
                             f"胞间跃迁（目标元胞偏移 dx={dx:+d}, dy={dy:+d}）"
                         )
                         relation_kind = "inter"
+                # Refresh the raw role from the current visible text first;
+                # users may have edited a cell since the last presentation
+                # pass, and the tooltip must never show a stale value.
+                for col in range(table.columnCount()):
+                    item = table.item(row, col)
+                    if item is not None:
+                        item.setData(RAW_VALUE_ROLE, item.text())
                 for col in (3, 4):
                     item = table.item(row, col)
                     if item is not None:
@@ -1511,7 +1532,8 @@ class ControlPanel(QWidget):
                 continue
             item.setData(Qt.BackgroundRole, brush)
             item.setData(Qt.UserRole, relation_kind)
-            item.setData(Qt.ToolTipRole, relation)
+            raw = item.data(RAW_VALUE_ROLE) or item.text()
+            item.setData(Qt.ToolTipRole, f"{relation}\n完整值：{raw}")
 
     def _set_selected_hop_offset(self, off_x: int, off_y: int) -> None:
         """Set the selected row's cell relation through a compact UI action."""
@@ -1520,8 +1542,8 @@ class ControlPanel(QWidget):
             return
         self.hop_table.blockSignals(True)
         try:
-            self.hop_table.setItem(row, 3, QTableWidgetItem(str(int(off_x))))
-            self.hop_table.setItem(row, 4, QTableWidgetItem(str(int(off_y))))
+            self.hop_table.setItem(row, 3, self._table_item(str(int(off_x))))
+            self.hop_table.setItem(row, 4, self._table_item(str(int(off_y))))
         finally:
             self.hop_table.blockSignals(False)
         self._update_hop_relation_tooltips()
@@ -1619,13 +1641,17 @@ class ControlPanel(QWidget):
             return
         table_row = table_rows[int(index)]
         self.site_table.blockSignals(True)
-        self.site_table.setItem(table_row, 0, QTableWidgetItem(f"{float(x):.12g}"))
-        self.site_table.setItem(table_row, 1, QTableWidgetItem(f"{float(y):.12g}"))
+        self.site_table.setItem(
+            table_row, 0, self._table_item(float(x))
+        )
+        self.site_table.setItem(
+            table_row, 1, self._table_item(float(y))
+        )
         self.site_table.blockSignals(False)
         self._emit_changed()
 
     def append_site(self, x: float, y: float, sublattice: str = "A"):
-        self._add_row(self.site_table, [f"{x:.12g}", f"{y:.12g}", sublattice])
+        self._add_row(self.site_table, [float(x), float(y), sublattice])
 
     def remove_site(self, index: int):
         """Remove a site and all incident hops; reindex remaining endpoints."""
@@ -1658,9 +1684,9 @@ class ControlPanel(QWidget):
                 self.hop_table.removeRow(row)
                 continue
             if fr > index:
-                self.hop_table.setItem(row, 1, QTableWidgetItem(str(fr)))
+                self.hop_table.setItem(row, 1, self._table_item(str(fr)))
             if to > index:
-                self.hop_table.setItem(row, 2, QTableWidgetItem(str(to)))
+                self.hop_table.setItem(row, 2, self._table_item(str(to)))
         self.site_table.blockSignals(False)
         self.hop_table.blockSignals(False)
         self._update_hop_relation_tooltips()
@@ -1814,15 +1840,42 @@ class ControlPanel(QWidget):
             for c, val in enumerate(row):
                 if c >= len(cols):
                     break
-                table.setItem(r, c, QTableWidgetItem(str(val)))
+                table.setItem(r, c, ControlPanel._table_item(val))
         table.blockSignals(False)
+
+    @staticmethod
+    def _table_item(value) -> QTableWidgetItem:
+        """Create a compact item while preserving the exact value on hover.
+
+        Long floating-point coordinates are the main source of ``0...`` in
+        the 180% rail.  Show eight significant digits in the cell (enough for
+        visual inspection and editing), while the tooltip keeps Python's full
+        model-facing representation for precision-sensitive checks.
+        """
+        raw_text = str(value)
+        text = raw_text
+        if isinstance(value, float) and math.isfinite(value) and len(raw_text) > 10:
+            text = f"{value:.8g}"
+        item = QTableWidgetItem(text)
+        item.setData(RAW_VALUE_ROLE, raw_text)
+        item.setToolTip(f"完整值：{raw_text}")
+        return item
+
+    @staticmethod
+    def _set_raw_value_tooltip(table: QTableWidget, row: int, column: int) -> None:
+        item = table.item(int(row), int(column))
+        if item is None:
+            return
+        text = item.text()
+        item.setData(RAW_VALUE_ROLE, text)
+        item.setToolTip(f"完整值：{text}")
 
     def _add_row(self, table: QTableWidget, defaults):
         table.blockSignals(True)
         r = table.rowCount()
         table.insertRow(r)
         for c, d in enumerate(defaults):
-            table.setItem(r, c, QTableWidgetItem(str(d)))
+            table.setItem(r, c, self._table_item(d))
         table.blockSignals(False)
         if table is self.hop_table:
             self._update_hop_relation_tooltips()

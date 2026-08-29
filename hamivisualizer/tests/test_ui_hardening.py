@@ -410,6 +410,29 @@ def test_compact_hopping_table_keeps_intra_inter_cell_offsets_visible():
     assert "胞内跃迁" in panel.hop_table.item(0, 3).toolTip()
 
 
+def test_dense_coordinate_cells_keep_full_values_in_hover_help():
+    """Elided high-scale cells must still expose the exact parsed value."""
+    _app, win, _ctrl = _window()
+    panel = win.panel
+    panel.set_lattice_rows([(0.123456789012, 0.987654321098, "A")])
+    x_item = panel.site_table.item(0, 0)
+    y_item = panel.site_table.item(0, 1)
+    assert x_item.text() == "0.12345679"
+    assert y_item.text() == "0.98765432"
+    assert x_item.toolTip() == "完整值：0.123456789012"
+    assert y_item.toolTip() == "完整值：0.987654321098"
+
+    # The tooltip follows an inline edit rather than retaining the old
+    # coordinate, which matters when the visible text is ellipsized.
+    x_item.setText("12.345678901234")
+    assert x_item.toolTip() == "完整值：12.345678901234"
+
+    panel.set_hop_rows([["t", 0, 0, 1, 0, "-t", "none", "0", 1]])
+    amp_item = panel.hop_table.item(0, 5)
+    assert "胞间跃迁" in amp_item.toolTip()
+    assert "完整值：-t" in amp_item.toolTip()
+
+
 def test_hopping_relation_rows_have_visual_cue_and_context_edit_path():
     """关系提示不只依赖用户阅读 dx/dy，常用切换也可直接完成。"""
     _app, win, ctrl = _window()

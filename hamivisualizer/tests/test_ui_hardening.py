@@ -1671,6 +1671,30 @@ def test_real_press_move_release_drag_updates_site_and_keeps_hops():
         QApplication.processEvents()
 
 
+def test_edit_position_constraint_handles_oblique_cells_without_affecting_standalone_scene():
+    """Oblique cells clamp in fractional coordinates; lightweight scenes stay free."""
+    QApplication.instance() or QApplication([])
+    scene = LatticeView()
+    scene.set_edit_context(
+        [(0.1, 0.1, "A"), (0.4, 0.2, "B")],
+        cell_vectors=((2.0, 0.0), (0.75, 1.5)),
+        anchor_offset=(0.3, -0.2),
+    )
+    constrained = scene.constrain_edit_position(QPointF(4.0, -4.0))
+    x = constrained.x() - 0.3
+    y = -constrained.y() + 0.2
+    det = 2.0 * 1.5
+    u = (x * 1.5 - y * 0.75) / det
+    v = (2.0 * y) / det
+    assert 0.0 <= u < 1.0
+    assert 0.0 <= v < 1.0
+
+    free_scene = LatticeView()
+    free_scene.set_edit_context([(0.0, 0.0, "A")])
+    point = QPointF(4.0, -4.0)
+    assert free_scene.constrain_edit_position(point) == point
+
+
 def test_explicit_bond_tool_rebuilds_without_losing_sites(monkeypatch):
     """A completed visual bond action is one safe, self-terminating edit."""
     _app, win, ctrl = _window()

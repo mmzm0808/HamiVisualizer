@@ -456,6 +456,7 @@ def test_hopping_relation_rows_have_visual_cue_and_context_edit_path():
     menu = panel._create_hop_context_menu(1)
     menu_texts = [action.text() for action in menu.actions() if not action.isSeparator()]
     assert menu_texts == [
+        "复制完整值",
         "设为胞内（dx=0, dy=0）",
         "设为右侧胞间（dx=+1, dy=0）",
         "设为左侧胞间（dx=-1, dy=0）",
@@ -468,6 +469,27 @@ def test_hopping_relation_rows_have_visual_cue_and_context_edit_path():
     changed = panel.get_hop_rows()[0]
     assert (changed["off_x"], changed["off_y"]) == (0, 1)
     assert panel.hop_table.item(0, 0).data(Qt.UserRole) == "inter"
+
+
+def test_table_context_copy_uses_unabridged_coordinate_and_hop_text():
+    """Right-click copy must use source text, not the elided cell display."""
+    _app, win, _ctrl = _window()
+    panel = win.panel
+    panel.set_lattice_rows([(0.123456789012, 0.987654321098, "A")])
+    assert panel.site_table.contextMenuPolicy() == Qt.CustomContextMenu
+    copied = panel._copy_table_value(panel.site_table, 0, 0)
+    assert copied == "0.123456789012"
+    assert QApplication.clipboard().text() == copied
+
+    panel.set_hop_rows([["t", 0, 0, 1, 0, "-t", "none", "0", 1]])
+    hop_menu = panel._create_hop_context_menu(0, 5)
+    copy_action = next(
+        action for action in hop_menu.actions() if action.text() == "复制完整值"
+    )
+    assert copy_action.isEnabled()
+    copy_action.trigger()
+    assert QApplication.clipboard().text() == "-t"
+    hop_menu.deleteLater()
 
 
 def test_add_hop_mode_menu_creates_explicit_intra_and_inter_cell_rows():

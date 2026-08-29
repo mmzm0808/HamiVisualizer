@@ -29,6 +29,7 @@ from PySide6.QtGui import QBrush, QColor, QKeyEvent, QPainter, QPalette, QPen, Q
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -517,6 +518,10 @@ class ControlPanel(QWidget):
         self.site_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
         self.site_table.setAlternatingRowColors(True)
         self.site_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.site_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.site_table.setToolTip(
+            "格点坐标在窄窗口中可紧凑显示；右键单元格可复制未省略的完整值。"
+        )
         s_lay.addWidget(self.site_table)
         btn = QHBoxLayout()
         self.add_site_btn = QPushButton("+ 格点")
@@ -700,6 +705,9 @@ class ControlPanel(QWidget):
         self.kx_slider.valueChanged.connect(self._kx_changed)
         self.kx_edit.editingFinished.connect(self._kx_from_edit)
         self.site_table.cellChanged.connect(self._site_cell_changed)
+        self.site_table.customContextMenuRequested.connect(
+            self._show_site_context_menu
+        )
         self.lx_spin.valueChanged.connect(self._cell_size_changed)
         self.ly_spin.valueChanged.connect(self._cell_size_changed)
         self.apply_vectors_btn.clicked.connect(self._apply_cell_vectors)
@@ -1550,10 +1558,47 @@ class ControlPanel(QWidget):
         self._update_hop_relation_hint()
         self._emit_changed()
 
-    def _create_hop_context_menu(self, row: int) -> QMenu:
+    def _copy_table_value(self, table: QTableWidget, row: int, column: int) -> str:
+        """Copy the unabridged source text of one table cell."""
+        item = table.item(int(row), int(column))
+        if item is None:
+            return ""
+        raw = item.data(RAW_VALUE_ROLE)
+        text = str(raw if raw is not None else item.text())
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(text)
+        return text
+
+    def _value_copy_action(
+        self, menu: QMenu, table: QTableWidget, row: int, column: int,
+    ):
+        item = table.item(int(row), int(column))
+        action = menu.addAction("复制完整值")
+        action.setToolTip("复制该单元格未省略的原始文本到剪贴板")
+        action.setEnabled(item is not None)
+        action.triggered.connect(
+            lambda _checked=False: self._copy_table_value(table, row, column)
+        )
+        return action
+
+    def _show_site_context_menu(self, position) -> None:
+        """Show a small, cell-focused menu for coordinate inspection."""
+        row = self.site_table.rowAt(position.y())
+        column = self.site_table.columnAt(position.x())
+        if row < 0 or column < 0:
+            return
+        self.site_table.setCurrentCell(row, column)
+        menu = QMenu(self.site_table)
+        self._value_copy_action(menu, self.site_table, row, column)
+        menu.exec(self.site_table.viewport().mapToGlobal(position))
+
+    def _create_hop_context_menu(self, row: int, column: int = 0) -> QMenu:
         """Build the row relation menu without coupling it to pointer events."""
         menu = QMenu(self.hop_table)
         menu.setToolTipsVisible(True)
+        self._value_copy_action(menu, self.hop_table, row, column)
+        menu.addSeparator()
         intra = menu.addAction("设为胞内（dx=0, dy=0）")
         intra.setToolTip("同一元胞内的跃迁，不产生 Bloch 跨胞相位。")
         right = menu.addAction("设为右侧胞间（dx=+1, dy=0）")
@@ -1581,10 +1626,12 @@ class ControlPanel(QWidget):
     def _show_hop_context_menu(self, position) -> None:
         """Offer common intra/inter-cell edits on the row under the pointer."""
         row = self.hop_table.rowAt(position.y())
-        if row < 0:
+        column = self.hop_table.columnAt(position.x())
+        if row < 0 or column < 0:
             return
+        self.hop_table.setCurrentCell(row, column)
         self.hop_table.selectRow(row)
-        menu = self._create_hop_context_menu(row)
+        menu = self._create_hop_context_menu(row, column)
         menu.exec(self.hop_table.viewport().mapToGlobal(position))
 
     def _update_hop_relation_hint(self):

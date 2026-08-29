@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import math
+from copy import deepcopy
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -751,6 +752,38 @@ def test_restore_edit_baseline_removes_new_spacing_override_when_original_was_au
     restored = ctrl.current_document()
     assert restored["cell"] is None
     assert win.panel.get_cell_size() is None
+
+
+def test_restore_edit_baseline_drops_only_hops_to_new_sites():
+    """恢复几何后，新增格点的悬空跃迁不能让整个恢复动作失败。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "空白自定义", boundary_kind="semi", ny=1, connectivity="仅格点",
+    ))
+    win._set_lattice_edit_mode(True)
+    baseline = ctrl.current_document()
+    assert len(baseline["sites"]) == 1
+
+    # Simulate a valid topology edit: one new site and one valid original
+    # bond plus one bond that points only to the newly-added site.
+    current = deepcopy(baseline)
+    current["sites"].append({"x": 0.5, "y": 0.0, "sublattice": "B"})
+    current["hops"] = [
+        {"name": "t", "from_site": 0, "to_site": 0,
+         "cell_offset": [1, 0], "amplitude": "1", "phase_mode": "none",
+         "phase": "0", "phase_sign": 1},
+        {"name": "t", "from_site": 0, "to_site": 1,
+         "cell_offset": [0, 0], "amplitude": "1", "phase_mode": "none",
+         "phase": "0", "phase_sign": 1},
+    ]
+    ctrl.apply_document(current)
+    win._restore_edit_baseline()
+
+    restored = ctrl.current_document()
+    assert restored["sites"] == baseline["sites"]
+    assert len(restored["hops"]) == 1
+    assert restored["hops"][0]["to_site"] == 0
+    assert "新增格点" in win.statusBar().currentMessage()
 
 
 def test_parameter_outside_slider_range_is_preserved():

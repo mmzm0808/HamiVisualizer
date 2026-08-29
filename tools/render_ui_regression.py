@@ -8,6 +8,7 @@ evidence stays separate from user models and settings.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import os
 from pathlib import Path
 import sys
@@ -125,6 +126,10 @@ def main() -> int:
     parser.add_argument(
         "--restore-spacing-demo", action="store_true",
         help="Render restoration of automatic cell spacing after a manual edit.",
+    )
+    parser.add_argument(
+        "--restore-topology-demo", action="store_true",
+        help="Render geometry restore after adding a site and a dangling hopping row.",
     )
     parser.add_argument(
         "--dense-guard-demo", action="store_true",
@@ -476,6 +481,30 @@ def main() -> int:
         window.panel.sites_group.setExpanded(True)
         window.panel.hops_group.setExpanded(False)
         window.lattice_mode_btn.setChecked(True)
+    if args.restore_topology_demo:
+        # Exercise the user-facing recovery path after a topology experiment:
+        # one valid original bond and one bond that points to a newly-added
+        # site are restored against the original one-site basis.  The main
+        # window keeps the valid row and reports the dropped dangling row in
+        # the status bar; this is intentionally rendered, not just asserted.
+        baseline = controller.current_document()
+        window._set_lattice_edit_mode(True)
+        current = deepcopy(baseline)
+        current["sites"].append({"x": 0.5, "y": 0.0, "sublattice": "B"})
+        current["hops"] = [
+            {"name": "t", "from_site": 0, "to_site": 0,
+             "cell_offset": [1, 0], "amplitude": "1", "phase_mode": "none",
+             "phase": "0", "phase_sign": 1},
+            {"name": "t", "from_site": 0, "to_site": 1,
+             "cell_offset": [0, 0], "amplitude": "1", "phase_mode": "none",
+             "phase": "0", "phase_sign": 1},
+        ]
+        controller.apply_document(current)
+        window._restore_edit_baseline()
+        window.tabs.setCurrentIndex(2)
+        window.panel.sites_group.setExpanded(True)
+        window.panel.hops_group.setExpanded(True)
+        window.panel_scroll.ensureWidgetVisible(window.panel.sites_group)
     if args.ghost_hop_demo:
         if args.boundary != "semi":
             raise ValueError("--ghost-hop-demo 仅适用于半无限边界")
@@ -528,6 +557,13 @@ def main() -> int:
         window._set_theme_mode(mode)
         window._set_ui_scale(ui_scale, persist=False)
         prepare_view()
+        if args.restore_topology_demo:
+            # UI scaling itself writes a short status message. Re-assert the
+            # recovery result immediately before the screenshot so the frame
+            # records the actionable feedback users actually need to see.
+            window.statusBar().showMessage(
+                "已恢复编辑前构型；已移除 1 条指向新增格点的无效跃迁"
+            )
         if args.matrix_selection_demo or args.matrix_copy_demo:
             window.tabs.setCurrentIndex(1)
             window._on_matrix_cell_clicked(0, 1 if window.matrix_scene._data.n > 1 else 0)

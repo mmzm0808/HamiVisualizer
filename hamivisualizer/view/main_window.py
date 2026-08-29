@@ -636,6 +636,36 @@ class MainWindow(QMainWindow):
         # Lx/Ly override behind, so restoring geometry was only half-effective.
         # Restore the explicit None as well as vector/rectangular definitions.
         restored["cell"] = deepcopy(baseline.get("cell"))
+        # A geometry-only restore intentionally keeps parameter and hopping
+        # edits.  Topology edits can, however, contain a newly-added site
+        # index that no longer exists after the baseline sites are restored.
+        # Passing that dangling row to the controller used to make the
+        # restore fail wholesale, which is especially confusing after a
+        # snap/drag experiment.  Keep every still-valid hopping definition
+        # (including user-edited offsets) and discard only rows whose local
+        # endpoints cannot exist in the restored basis.
+        hops = restored.get("hops")
+        if isinstance(hops, list):
+            site_count = len(restored["sites"])
+            valid_hops = []
+            dropped = 0
+            for hop in hops:
+                if not isinstance(hop, dict):
+                    dropped += 1
+                    continue
+                try:
+                    from_site = int(hop.get("from_site", -1))
+                    to_site = int(hop.get("to_site", -1))
+                except (TypeError, ValueError):
+                    dropped += 1
+                    continue
+                if 0 <= from_site < site_count and 0 <= to_site < site_count:
+                    valid_hops.append(hop)
+                else:
+                    dropped += 1
+            restored["hops"] = valid_hops
+        else:
+            dropped = 0
         try:
             controller.apply_document(restored)
         except (TypeError, ValueError) as exc:
@@ -643,7 +673,12 @@ class MainWindow(QMainWindow):
             return
         self.set_dirty(True)
         self.lattice_scene.set_snap_reference_sites(baseline.get("sites", []))
-        self.statusBar().showMessage("已恢复编辑前的格点位置和元胞矢量")
+        if dropped:
+            self.statusBar().showMessage(
+                f"已恢复编辑前构型；已移除 {dropped} 条指向新增格点的无效跃迁"
+            )
+        else:
+            self.statusBar().showMessage("已恢复编辑前的格点位置和元胞矢量")
 
     def showEvent(self, event):
         super().showEvent(event)

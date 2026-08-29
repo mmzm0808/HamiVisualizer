@@ -484,10 +484,14 @@ class ControlPanel(QWidget):
         vector_row2.addWidget(self.a2y_spin, 1)
         vector_btn_row = QHBoxLayout()
         vector_btn_row.addStretch()
-        for spin in (
-            self.lx_spin, self.ly_spin,
-            self.a1x_spin, self.a1y_spin, self.a2x_spin, self.a2y_spin,
-        ):
+        # Length fields are magnitudes, never signed vector components.  The
+        # previous shared range made it possible to type a negative ``a₁/a₂``
+        # length; ``get_cell_size`` then interpreted two negatives as
+        # ``自动`` and the next rebuild failed much later in the Hamiltonian
+        # layer.  Keep signs available only on the four vector components.
+        for spin in (self.lx_spin, self.ly_spin):
+            spin.setRange(0.0, 1000.0)
+        for spin in (self.a1x_spin, self.a1y_spin, self.a2x_spin, self.a2y_spin):
             spin.setRange(-1000.0, 1000.0)
             spin.setDecimals(8)
             spin.setSingleStep(0.05)
@@ -784,6 +788,15 @@ class ControlPanel(QWidget):
         det = a1[0] * a2[1] - a1[1] * a2[0]
         if abs(det) < 1e-10:
             self.set_error("a₁ 与 a₂ 不可共线；请调整元胞矢量")
+            return
+        if math.hypot(*a1) <= 1e-12 or abs(a2[1]) <= 1e-12:
+            # ``Lattice`` uses |a₂.y| as the finite-direction period.  Catch
+            # this at the point of entry so an invalid vector never reaches
+            # a rebuild and leaves the user with a generic scene error.
+            self.set_error("a₁ 必须非零，且 a₂ 的 y 分量必须非零")
+            return
+        if not all(math.isfinite(value) for value in (*a1, *a2)):
+            self.set_error("元胞矢量必须是有限数值")
             return
         self._cell_vectors = (a1, a2)
         self._updating_cell = True
@@ -1238,9 +1251,11 @@ class ControlPanel(QWidget):
         if self._cell_vectors is not None:
             return None
         lx, ly = self.lx_spin.value(), self.ly_spin.value()
-        if lx <= 0 and ly <= 0:
+        if lx < 0 or ly < 0:
+            raise ValueError("元胞 Lx 与 Ly 不能为负数")
+        if lx == 0 and ly == 0:
             return None
-        if lx <= 0 or ly <= 0:
+        if lx == 0 or ly == 0:
             raise ValueError("元胞 Lx 与 Ly 必须同时设置，或同时选择自动")
         return float(lx), float(ly)
 
@@ -1248,6 +1263,15 @@ class ControlPanel(QWidget):
         return self._cell_vectors
 
     def set_cell_size(self, cell: tuple[float, float] | None):
+        if cell is not None:
+            try:
+                lx, ly = (float(cell[0]), float(cell[1]))
+            except (IndexError, TypeError, ValueError):
+                raise ValueError("元胞尺寸必须是 (Lx, Ly) 数值对") from None
+            if not (math.isfinite(lx) and math.isfinite(ly)):
+                raise ValueError("元胞尺寸必须是有限数值")
+            if lx < 0 or ly < 0 or ((lx == 0) != (ly == 0)):
+                raise ValueError("元胞 Lx 与 Ly 必须为正数，或同时选择自动")
         self._cell_vectors = None
         self.lx_spin.blockSignals(True)
         self.ly_spin.blockSignals(True)
@@ -1255,17 +1279,34 @@ class ControlPanel(QWidget):
             self.lx_spin.setValue(0.0)
             self.ly_spin.setValue(0.0)
         else:
-            self.lx_spin.setValue(float(cell[0]))
-            self.ly_spin.setValue(float(cell[1]))
+            self.lx_spin.setValue(lx)
+            self.ly_spin.setValue(ly)
         self.lx_spin.blockSignals(False)
         self.ly_spin.blockSignals(False)
         self._sync_vector_spins(rectangular=True)
 
     def set_cell_vectors(self, vectors: tuple[tuple[float, float], tuple[float, float]] | None):
-        self._cell_vectors = vectors
         if vectors is None:
+            self._cell_vectors = None
+            self._sync_vector_spins(rectangular=True)
             return
-        (a1x, a1y), (a2x, a2y) = vectors
+        try:
+            a1 = (float(vectors[0][0]), float(vectors[0][1]))
+            a2 = (float(vectors[1][0]), float(vectors[1][1]))
+        except (IndexError, TypeError, ValueError):
+            raise ValueError("元胞矢量必须是两个二维数值向量") from None
+        det = a1[0] * a2[1] - a1[1] * a2[0]
+        if not all(math.isfinite(value) for value in (*a1, *a2)):
+            raise ValueError("元胞矢量必须是有限数值")
+        if abs(det) < 1e-12:
+            raise ValueError("a₁ 与 a₂ 不可共线；请调整元胞矢量")
+        if math.hypot(*a1) <= 1e-12 or abs(a2[1]) <= 1e-12:
+            raise ValueError("a₁ 必须非零，且 a₂ 的 y 分量必须非零")
+        # Store an immutable, normalized copy.  A caller passing mutable lists
+        # must not be able to alter the active geometry behind the panel's
+        # change/rebuild signature.
+        self._cell_vectors = (a1, a2)
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
         old_lx = self.lx_spin.blockSignals(True)
         old_ly = self.ly_spin.blockSignals(True)
         try:

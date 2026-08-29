@@ -130,6 +130,10 @@ def main() -> int:
         help="Render restoration of automatic cell spacing after a manual edit.",
     )
     parser.add_argument(
+        "--spacing-edit-demo", action="store_true",
+        help="Render an active edit session after changing rectangular/oblique cell spacing.",
+    )
+    parser.add_argument(
         "--restore-topology-demo", action="store_true",
         help="Render geometry restore after adding a site and a dangling hopping row.",
     )
@@ -391,6 +395,55 @@ def main() -> int:
             _save(window, args.output / f"{args.prefix}-{theme}-{scale}.png")
         window.close()
         return 0
+    if args.spacing_edit_demo:
+        # Exercise the user-facing path that is easy to get subtly wrong:
+        # change the primitive-cell spacing while visual editing is active,
+        # then verify the handles, cell frame and magnetic targets all follow
+        # the new geometry.  Keep the modified frame (rather than restoring)
+        # so the screenshot is useful as a visual audit of the live state.
+        window._set_lattice_edit_mode(True)
+        vectors = window.panel.get_cell_vectors()
+        if vectors is not None:
+            scaled = (
+                (float(vectors[0][0]) * 1.20, float(vectors[0][1]) * 1.20),
+                (float(vectors[1][0]) * 1.12, float(vectors[1][1]) * 1.12),
+            )
+            window.panel.set_cell_vectors(scaled)
+            spacing_text = "斜元胞间距已更新：|a₁|×1.20，|a₂|×1.12"
+        else:
+            cell = window.panel.get_cell_size()
+            if cell is None:
+                rows = window.panel.get_site_rows()
+                max_x = max((float(row[0]) for row in rows), default=0.0)
+                max_y = max((float(row[1]) for row in rows), default=0.0)
+                cell = (max_x + 1.0, max_y + 1.0)
+            window.panel.set_cell_size(
+                (float(cell[0]) * 1.20, float(cell[1]) * 1.12)
+            )
+            spacing_text = "矩形元胞间距已更新：Lx×1.20，Ly×1.12"
+        controller.rebuild()
+        window.tabs.setCurrentIndex(2)
+        window.panel.params_group.setExpanded(False)
+        window.panel.energy_group.setExpanded(False)
+        window.panel.display_group.setExpanded(False)
+        window.panel.sites_group.setExpanded(True)
+        window.panel.hops_group.setExpanded(False)
+        window.panel_scroll.ensureWidgetVisible(window.panel.sites_group)
+        window.set_dirty(False)
+        window._set_ui_scale(args.ui_scale or 1.0, persist=False)
+        window.statusBar().showMessage(
+            f"{spacing_text}；编辑锚点与吸附参考已同步"
+        )
+        scale = int(round((args.ui_scale or 1.0) * 100))
+        for theme in ("light", "dark"):
+            window._set_theme_mode(theme)
+            QApplication.processEvents()
+            window.statusBar().showMessage(
+                f"{spacing_text}；编辑锚点与吸附参考已同步"
+            )
+            _save(window, args.output / f"{args.prefix}-{theme}-{scale}.png")
+        window.close()
+        return 0
     if args.intercell_menu_demo:
         # Keep the evidence focused on the actual side-panel entry point.
         # Capture the popup itself because QWidget.grab() intentionally does
@@ -488,7 +541,7 @@ def main() -> int:
         # rather than pretending a background result already exists.
         if window.wf_view._data is not None:
             window.wf_view.select_energy(args.energy)
-    if args.edit_lattice or args.drag_snap_demo:
+    if args.edit_lattice or args.drag_snap_demo or args.spacing_edit_demo:
         window.panel.params_group.setExpanded(False)
         window.panel.energy_group.setExpanded(False)
         window.panel.display_group.setExpanded(False)
@@ -678,6 +731,10 @@ def main() -> int:
             # same user-facing result at every scale.
             window.statusBar().showMessage(
                 "已拖动格点 1；智能吸附已启用，坐标保持在元胞内"
+            )
+        if args.spacing_edit_demo:
+            window.statusBar().showMessage(
+                "元胞间距已更新；编辑锚点与吸附参考已同步"
             )
         if args.matrix_selection_demo or args.matrix_copy_demo:
             window.tabs.setCurrentIndex(1)

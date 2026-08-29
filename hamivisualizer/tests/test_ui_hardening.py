@@ -1080,6 +1080,77 @@ def test_oblique_cell_length_zero_does_not_leave_an_inconsistent_auto_state():
     assert win.panel.error_label.isHidden()
 
 
+def test_cell_spacing_editor_rejects_signed_lengths_and_keeps_auto_pair_atomic():
+    """长度输入只能是正值；自动间距必须由 Lx/Ly 成对启用。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "空白自定义", boundary_kind="semi", ny=2, connectivity="仅格点",
+    ))
+    win.panel.set_cell_size((2.0, 3.0))
+    before = win.panel.get_cell_size()
+    with pytest.raises(ValueError, match="正数|自动"):
+        win.panel.set_cell_size((-1.0, 3.0))
+    assert win.panel.get_cell_size() == before
+
+    # A user can temporarily type zero while clearing both fields.  The
+    # intermediate half-auto state is rejected by the public getter instead
+    # of being silently interpreted as a negative/automatic geometry.
+    win.panel.lx_spin.setValue(0.0)
+    with pytest.raises(ValueError, match="同时设置|自动"):
+        win.panel.get_cell_size()
+    win.panel.ly_spin.setValue(0.0)
+    assert win.panel.get_cell_size() is None
+
+
+def test_spacing_edit_reflows_anchor_and_snap_targets_with_new_cell_vectors():
+    """间距修改后，编辑锚点、元胞框和吸附参考必须使用同一组新矢量。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "蜂窝", ny=4, boundary_kind="semi", connectivity="最近邻",
+    ))
+    win._set_lattice_edit_mode(True)
+    scene = win.lattice_scene
+    old_anchor = scene.edit_anchor_offset
+    old_polygons = tuple(scene._data.cell_polygons)
+    old_vectors = win.panel.get_cell_vectors()
+    assert old_vectors is not None
+    (a1x, a1y), (a2x, a2y) = old_vectors
+    new_vectors = ((a1x * 1.25, a1y * 1.25), (a2x * 1.1, a2y * 1.1))
+    win.panel.set_cell_vectors(new_vectors)
+    ctrl.rebuild()
+
+    for actual, expected in zip(scene._cell_vectors, new_vectors):
+        assert actual == pytest.approx(expected)
+    assert scene.edit_anchor_offset != old_anchor
+    assert tuple(scene._data.cell_polygons) != old_polygons
+    item = scene._edit_items[0]
+    x0, y0, _sub = win.panel.get_site_rows()[0]
+    assert item.pos().x() == pytest.approx(x0 + scene.edit_anchor_offset[0])
+    assert item.pos().y() == pytest.approx(-y0 - scene.edit_anchor_offset[1])
+
+    # The edit-session baseline remains in local primitive-cell coordinates,
+    # but its scene position must be transformed by the newly active anchor.
+    snapped = scene.snap_position(
+        0,
+        item.pos() + QPointF(0.04, -0.03),
+    )
+    assert snapped.x() == pytest.approx(x0 + scene.edit_anchor_offset[0])
+    assert snapped.y() == pytest.approx(-y0 - scene.edit_anchor_offset[1])
+
+
+def test_set_cell_vectors_copies_mutable_inputs_and_validates_lattice_periods():
+    """矢量输入不会被外部列表别名修改，且无效周期会即时拒绝。"""
+    _app, win, _ctrl = _window()
+    vectors = [[2.0, 0.0], [0.5, 1.5]]
+    win.panel.set_cell_vectors(vectors)
+    vectors[0][0] = 99.0
+    assert win.panel.get_cell_vectors() == ((2.0, 0.0), (0.5, 1.5))
+    with pytest.raises(ValueError, match="非零|共线"):
+        win.panel.set_cell_vectors(((0.0, 0.0), (0.0, 1.0)))
+    with pytest.raises(ValueError, match="非零|共线"):
+        win.panel.set_cell_vectors(((1.0, 0.0), (1.0, 0.0)))
+
+
 def test_oblique_a1_vertical_component_moves_hop_editor_endpoint():
     """Canvas guides must use the same oblique displacement as the solver."""
     QApplication.instance() or QApplication([])

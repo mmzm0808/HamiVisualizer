@@ -132,6 +132,10 @@ def main() -> int:
         help="Render geometry restore after adding a site and a dangling hopping row.",
     )
     parser.add_argument(
+        "--restore-history-demo", action="store_true",
+        help="Render restore followed by undo/redo feedback in an isolated workspace.",
+    )
+    parser.add_argument(
         "--dense-guard-demo", action="store_true",
         help="Render the recoverable error shown before an unsafe dense calculation.",
     )
@@ -505,6 +509,33 @@ def main() -> int:
         window.panel.sites_group.setExpanded(True)
         window.panel.hops_group.setExpanded(True)
         window.panel_scroll.ensureWidgetVisible(window.panel.sites_group)
+    if args.restore_history_demo:
+        # Keep the screenshot self-contained: create the same per-model
+        # history stack as the application, but in a disposable workspace.
+        # The final frame is the real undo result after a geometry restore,
+        # so the status bar and action labels reflect the user's next step.
+        baseline = controller.current_document()
+        history = DocumentHistory(limit=10)
+        history.seed(baseline)
+        history_workspace = tempfile.TemporaryDirectory(
+            dir=args.output, prefix=".restore-history-workspace-"
+        )
+        window._workspace_root = Path(history_workspace.name)
+        window.preferences.autosave = False
+        window._workspace_enabled = True
+        window._sessions = [_Session(ModelSessionData(name=args.template), baseline, history)]
+        window._active_index = 0
+        window._set_lattice_edit_mode(True)
+        current = deepcopy(baseline)
+        current["sites"] = [dict(site) for site in baseline["sites"]]
+        current["sites"][0]["x"] = float(current["sites"][0]["x"]) + 0.25
+        controller.apply_document(current)
+        window._restore_edit_baseline()
+        window.undo()
+        window.tabs.setCurrentIndex(2)
+        window.panel.sites_group.setExpanded(True)
+        window.panel.hops_group.setExpanded(False)
+        window.panel_scroll.ensureWidgetVisible(window.panel.sites_group)
     if args.ghost_hop_demo:
         if args.boundary != "semi":
             raise ValueError("--ghost-hop-demo 仅适用于半无限边界")
@@ -564,6 +595,11 @@ def main() -> int:
             window.statusBar().showMessage(
                 "已恢复编辑前构型；已移除 1 条指向新增格点的无效跃迁"
             )
+        if args.restore_history_demo:
+            # The scale control also reports its change in the status bar;
+            # restore the operation feedback so every scale documents the
+            # undo path rather than the harness setup.
+            window.statusBar().showMessage("已撤销：移动或编辑格点")
         if args.matrix_selection_demo or args.matrix_copy_demo:
             window.tabs.setCurrentIndex(1)
             window._on_matrix_cell_clicked(0, 1 if window.matrix_scene._data.n > 1 else 0)

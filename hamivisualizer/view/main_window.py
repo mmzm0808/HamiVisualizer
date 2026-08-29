@@ -1105,23 +1105,36 @@ class MainWindow(QMainWindow):
     def undo(self):
         if not self._workspace_enabled:
             return
-        doc = self._sessions[self._active_index].history.undo()
+        history = self._sessions[self._active_index].history
+        label = history.undo_label
+        doc = history.undo()
         if doc is not None:
             self._history_replay = True
-            self.controller.apply_document(doc)
-            self._history_replay = False
+            try:
+                self.controller.apply_document(doc)
+            finally:
+                # A failed replay must never suppress future history pushes.
+                # Without this guard one malformed snapshot could leave the
+                # window permanently in replay mode until restart.
+                self._history_replay = False
             self.set_dirty(True)
+            self.flash_status(f"已撤销：{label or '上一步编辑'}")
         self._update_history_actions()
 
     def redo(self):
         if not self._workspace_enabled:
             return
-        doc = self._sessions[self._active_index].history.redo()
+        history = self._sessions[self._active_index].history
+        label = history.redo_label
+        doc = history.redo()
         if doc is not None:
             self._history_replay = True
-            self.controller.apply_document(doc)
-            self._history_replay = False
+            try:
+                self.controller.apply_document(doc)
+            finally:
+                self._history_replay = False
             self.set_dirty(True)
+            self.flash_status(f"已重做：{label or '上一步编辑'}")
         self._update_history_actions()
 
     def _update_history_actions(self):

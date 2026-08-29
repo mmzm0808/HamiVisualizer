@@ -788,6 +788,39 @@ def test_restore_edit_baseline_drops_only_hops_to_new_sites():
     assert "新增格点" in win.statusBar().currentMessage()
 
 
+def test_restore_edit_baseline_is_undoable_and_redoable(tmp_path):
+    """恢复构型应作为一次历史操作，且撤销/重做后仍可继续记录编辑。"""
+    _app, win, ctrl = _window()
+    win._workspace_root = tmp_path
+    win.enable_workspace_mode(ctrl)
+    win._set_lattice_edit_mode(True)
+    baseline = ctrl.current_document()
+
+    changed = deepcopy(baseline)
+    changed["sites"] = [dict(site) for site in baseline["sites"]]
+    changed["sites"][0]["x"] += 0.25
+    ctrl.apply_document(changed)
+    assert ctrl.current_document()["sites"] != baseline["sites"]
+
+    win._restore_edit_baseline()
+    assert ctrl.current_document()["sites"] == baseline["sites"]
+
+    win.undo()
+    assert ctrl.current_document()["sites"] == changed["sites"]
+    assert "移动或编辑格点" in win.statusBar().currentMessage()
+
+    win.redo()
+    assert ctrl.current_document()["sites"] == baseline["sites"]
+    assert "移动或编辑格点" in win.statusBar().currentMessage()
+
+    # History replay must not leak into subsequent edits.
+    changed_again = deepcopy(baseline)
+    changed_again["sites"] = [dict(site) for site in baseline["sites"]]
+    changed_again["sites"][0]["x"] -= 0.25
+    ctrl.apply_document(changed_again)
+    assert win._sessions[win._active_index].history.can_undo
+
+
 def test_parameter_outside_slider_range_is_preserved():
     _app, win, _ctrl = _window()
     win.panel.set_params({"custom": -123.456}, force=True)

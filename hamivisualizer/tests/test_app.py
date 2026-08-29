@@ -692,6 +692,26 @@ def test_triangle_scene_has_a_clear_physical_shape_badge():
     assert not (badges[0].flags() & QGraphicsItem.ItemIsMovable)
 
 
+def test_finite_nonrectangular_scene_does_not_draw_cells_outside_the_sample():
+    """Finite masks show one primitive-cell cue plus one physical silhouette."""
+    _app, win, ctrl = _mk()
+    ctrl.apply_document(template_document(
+        "Kagome", connectivity="最近邻", boundary_kind="obc",
+        nx=4, ny=4, shape="triangle",
+    ))
+    win.lattice_mode_btn.setChecked(False)
+    QApplication.processEvents()
+    # One reference primitive-cell polygon and one closed finite-shape
+    # silhouette are drawn; the remaining DTO polygons stay available for
+    # editing/export but no longer clutter the physical canvas.
+    polygons = [
+        item for item in win.lattice_scene.items()
+        if isinstance(item, QGraphicsPolygonItem)
+    ]
+    assert len(polygons) == 2
+    assert sum(item.data(0) == "finite-shape-outline" for item in polygons) == 1
+
+
 def test_nontriangular_scene_outlines_enclose_every_rendered_basis_site():
     """Disk/hexagon outlines must include multi-site basis overhangs."""
     _app, win, ctrl = _mk()

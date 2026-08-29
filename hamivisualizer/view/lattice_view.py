@@ -1176,7 +1176,17 @@ class LatticeView(QGraphicsScene):
         # the rest of the geometry.  The DTO still contains every polygon for
         # editing/export; this is presentation-only progressive disclosure.
         polygons = data.cell_polygons if self._show_cells else ()
-        if len(polygons) > 12:
+        # In a finite non-rectangular sample the primitive-cell polygons are
+        # a *reference* for editing, not a second outline of the whole disk.
+        # Drawing every oblique cell makes the parallelograms extend beyond
+        # the actual basis sites (especially the 3-site Kagome triangle),
+        # producing dashed lines outside the physical sample.  Keep one
+        # clearly highlighted primitive cell and let boundary_outline provide
+        # the single, honest physical silhouette.  Semi-infinite ribbons and
+        # rectangular OBC samples retain their complete cell grid.
+        if data.boundary_outline and not data.semi:
+            polygons = polygons[:1]
+        elif len(polygons) > 12:
             polygons = polygons[:1]
         for k, polygon in enumerate(polygons):
             item = QGraphicsPolygonItem(QPolygonF([QPointF(x, -y) for x, y in polygon]))

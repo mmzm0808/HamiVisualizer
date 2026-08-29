@@ -84,6 +84,10 @@ def main() -> int:
         "--show-all-hop-editors", action="store_true",
         help="In lattice edit mode, intentionally render every hopping editor.",
     )
+    parser.add_argument(
+        "--hop-editor-demo", action="store_true",
+        help="Click the first canvas coefficient field and commit a 1/3 fraction.",
+    )
     parser.add_argument("--bond-ratio-demo", action="store_true")
     parser.add_argument(
         "--oblique-a1-demo", action="store_true",
@@ -541,7 +545,8 @@ def main() -> int:
         # rather than pretending a background result already exists.
         if window.wf_view._data is not None:
             window.wf_view.select_energy(args.energy)
-    if args.edit_lattice or args.drag_snap_demo or args.spacing_edit_demo:
+    if (args.edit_lattice or args.drag_snap_demo or args.spacing_edit_demo
+            or args.hop_editor_demo):
         window.panel.params_group.setExpanded(False)
         window.panel.energy_group.setExpanded(False)
         window.panel.display_group.setExpanded(False)
@@ -626,6 +631,32 @@ def main() -> int:
     if args.select_hop_row is not None:
         window.lattice_scene.activate_hop_editor(args.select_hop_row)
     controller.fit_all(force=True)
+
+    if args.hop_editor_demo:
+        # Exercise the full user path: click the center of the fixed-pixel
+        # proxy (not its scene anchor), type a safe fraction, and commit it.
+        # This catches regressions where a proxy looks visible but the click
+        # is routed to the canvas and starts a pan gesture instead.
+        QApplication.processEvents()
+        if not window.lattice_scene._edit_proxies:
+            raise ValueError("--hop-editor-demo requires at least one hopping row")
+        proxy = window.lattice_scene._edit_proxies[0]
+        editor = proxy.widget()
+        top_left = window.lattice_gv.mapFromScene(proxy.pos())
+        center = top_left + QPoint(editor.width() // 2, editor.height() // 2)
+        QTest.mouseClick(window.lattice_gv.viewport(), Qt.LeftButton, pos=center)
+        QApplication.processEvents()
+        if not editor.hasFocus():
+            raise AssertionError("coefficient field did not receive the center click")
+        editor.selectAll()
+        QTest.keyClicks(editor, "1/3")
+        QTest.keyClick(editor, Qt.Key_Return)
+        QApplication.processEvents()
+        if window.lattice_gv._pan_press_pos is not None:
+            raise AssertionError("editing a coefficient field armed canvas panning")
+        window.statusBar().showMessage(
+            "已在画布系数框输入 1/3；参数与跃迁表已同步"
+        )
 
     if args.plain_click_demo:
         # Use the same viewport event path as a user click, rather than

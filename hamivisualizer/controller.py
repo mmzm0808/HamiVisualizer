@@ -319,7 +319,7 @@ class ViewController(QObject):
             self._create_hopping_with_offset
         )
         lattice_scene.hoppingStrengthEdited.connect(
-            self.window.panel.set_hopping_strength
+            self._on_hopping_strength_edited
         )
         lattice_scene.editSelectionChanged.connect(
             lambda text: self.window.statusBar().showMessage(text or "晶格编辑模式")
@@ -632,6 +632,18 @@ class ViewController(QObject):
         else:
             self._debounce.stop()
             self.window.statusBar().showMessage("输入已更改；点击“立即计算”更新结果")
+
+    def _on_hopping_strength_edited(self, row: int, strength: float) -> None:
+        """Apply a canvas coefficient and retain it through UI-only redraws."""
+        panel = self.window.panel
+        panel.set_hopping_strength(int(row), float(strength))
+        # ``set_hopping_strength`` reports validation failures through the
+        # panel error label and returns without changing the document.  Only
+        # accepted values may update the transient canvas edit context;
+        # otherwise a theme switch could display a value the model rejected.
+        if panel.error_label.text():
+            return
+        self.window.lattice_scene.update_hop_strength(int(row), float(strength))
 
     def _on_display_changed(self, reason: str):
         """Apply presentation-only options without rebuilding the Hamiltonian."""

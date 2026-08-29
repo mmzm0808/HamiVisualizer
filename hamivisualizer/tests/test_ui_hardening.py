@@ -1541,6 +1541,73 @@ def test_pressing_strength_editor_does_not_arm_canvas_pan():
     QTest.mouseRelease(view.viewport(), Qt.LeftButton, pos=point)
 
 
+def test_strength_editor_center_click_accepts_fraction_without_canvas_pan():
+    """The visible editor's full pixel footprint is a real text target.
+
+    A previous regression only exercised the proxy's top-left anchor.  That
+    could pass while a user click in the middle of the fixed-pixel field was
+    delivered to the canvas, arming a pan instead of entering text.
+    """
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    win.resize(1440, 920)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    win.lattice_coeff_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    scene, view = win.lattice_scene, win.lattice_gv
+    assert scene._edit_proxies
+    proxy = scene._edit_proxies[0]
+    editor = proxy.widget()
+    top_left = view.mapFromScene(proxy.pos())
+    center = top_left + QPoint(editor.width() // 2, editor.height() // 2)
+    before = ctrl.current_document()
+    QTest.mouseClick(view.viewport(), Qt.LeftButton, pos=center)
+    QApplication.processEvents()
+    assert editor.hasFocus()
+    assert view._pan_press_pos is None
+    editor.selectAll()
+    QTest.keyClicks(editor, "1/3")
+    QTest.keyClick(editor, Qt.Key_Return)
+    QApplication.processEvents()
+    assert view._pan_press_pos is None
+    after = ctrl.current_document()
+    assert after != before
+    # The canvas field and side table share the same positive-fraction parser;
+    # the first hopping row must now carry the normalized absolute strength.
+    assert float(win.panel.get_params()["t"]) == pytest.approx(1 / 3)
+    assert editor.text().startswith("0.")
+    assert editor.fontMetrics().horizontalAdvance(editor.text()) <= editor.width() - 20
+    assert editor.cursorPosition() == 0
+
+
+def test_strength_editor_remeasures_after_ui_scale_changes():
+    """Changing global UI scale after editing must not reintroduce clipping."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    win.resize(1440, 920)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    win.lattice_coeff_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    proxy = win.lattice_scene._edit_proxies[0]
+    editor = proxy.widget()
+    editor.setText("1/3")
+    win.lattice_scene._commit_hop_strength(0, editor)
+    QApplication.processEvents()
+    assert float(win.panel.get_params()["t"]) == pytest.approx(1 / 3)
+    win._set_ui_scale(1.8, persist=False)
+    QApplication.processEvents()
+    editor = win.lattice_scene._edit_proxies[0].widget()
+    assert editor.text().startswith("0.")
+    assert editor.fontMetrics().horizontalAdvance(editor.text()) <= editor.width() - 20
+    assert editor.height() >= 26
+
+
 def test_double_click_on_existing_lattice_content_never_adds_or_deletes():
     QApplication.instance() or QApplication([])
     scene = LatticeView()

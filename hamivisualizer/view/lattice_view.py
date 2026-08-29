@@ -106,6 +106,28 @@ def _parse_positive_strength(text: str) -> float:
     return value
 
 
+def _strength_editor_width(editor: QLineEdit, text: str) -> int:
+    """Return a compact fixed-pixel width that can actually show ``text``.
+
+    Coefficient editors are embedded in a scene with
+    ``ItemIgnoresTransformations``.  Their width therefore cannot be left to
+    scene scaling, and the old constant-width field clipped values such as
+    ``0.33333333`` immediately after a fraction was committed.  Measure the
+    rendered font and reserve room for the border/padding while keeping a
+    bounded rail width for dense lattices.
+    """
+    metrics = editor.fontMetrics()
+    # The stylesheet contributes 7 px horizontal padding (6 px while focused)
+    # on each side, plus a two-pixel border.  A small extra cushion prevents
+    # the final digit from touching the rounded frame on high-DPI backends.
+    measured = metrics.horizontalAdvance(str(text)) + 24
+    # Keep a generous upper bound for large UI scales; the rail still uses a
+    # single column, so a wider field does not add visual clutter or extra
+    # leader lines.  The 260 px cap is intentional: at 180% UI scale a
+    # 9-character value can measure about 220 px on the bundled fallback font.
+    return max(68, min(260, int(math.ceil(measured))))
+
+
 class _EditableSiteItem(QGraphicsEllipseItem):
     """A unit-cell handle that snaps unless Alt is held."""
 
@@ -646,6 +668,22 @@ class LatticeView(QGraphicsScene):
         self.editSelectionChanged.emit(
             f"已选跃迁 {int(row) + 1}；在键旁输入强度，或在左侧表格精确编辑"
         )
+
+    def update_hop_strength(self, row: int, strength: float) -> None:
+        """Keep the transient edit context in sync with a committed field.
+
+        Theme/UI-scale changes rebuild the embedded editor layer from the
+        latest :attr:`_edit_hops` snapshot before the debounced Hamiltonian
+        rebuild necessarily runs.  Updating this view-only snapshot after the
+        controller accepts a value prevents a freshly applied stylesheet from
+        restoring the old coefficient on screen.
+        """
+        target = int(row)
+        value = float(strength)
+        for hop in self._edit_hops:
+            if int(hop.get("row", -1)) == target:
+                hop["strength"] = value
+                return
 
     def set_edit_context(self, sites, *, hops=(), cell_vectors=None,
                          snap_step: float | None = None,
@@ -1427,7 +1465,7 @@ class LatticeView(QGraphicsScene):
             # the input's complete border and hit target always agree.
             editor.ensurePolished()
             metrics = editor.fontMetrics()
-            width = max(68, min(96, metrics.horizontalAdvance("−1.234") + 10))
+            width = _strength_editor_width(editor, editor.text())
             styled_height = max(
                 editor.sizeHint().height(), editor.minimumSizeHint().height(),
                 metrics.height() + 12,
@@ -1542,6 +1580,25 @@ class LatticeView(QGraphicsScene):
                 self.set_zoom_level(abs(float(view.transform().m11())), view)
                 return
 
+    def _refresh_editor_sizes(self) -> None:
+        """Re-measure embedded fields after a global font/UI-scale change.
+
+        Applying a new application stylesheet changes font metrics without
+        necessarily emitting a child ``resizeEvent`` when the editor already
+        has a fixed size.  Re-measuring here closes that gap: the next layout
+        pass grows both width and height before the proxy is positioned.
+        """
+        for proxy, _x, _y in self._edit_proxy_anchors:
+            editor = proxy.widget()
+            if editor is None:
+                continue
+            editor.ensurePolished()
+            width = _strength_editor_width(editor, editor.text())
+            metrics = editor.fontMetrics()
+            height = max(26, min(44, int(metrics.height() + 12)))
+            if editor.width() != width or editor.height() != height:
+                editor.setFixedSize(width, height)
+
     def _set_editor_focus_state(self, proxy: QGraphicsProxyWidget, focused: bool) -> None:
         """Keep the focused field above handles and reveal it in the view."""
         # The right-hand rail keeps fields away from the physical handles.
@@ -1586,6 +1643,7 @@ class LatticeView(QGraphicsScene):
         if source is not None and not source.isVisible():
             return
         factor = max(1e-6, abs(float(scale)))
+        self._refresh_editor_sizes()
         rect = self.sceneRect()
         # The proxy ignores the view transform, so convert its *full* pixel
         # dimensions to scene units only for the scene-rect fallback.  The
@@ -1734,6 +1792,22 @@ class LatticeView(QGraphicsScene):
         editor.setStyleSheet("")
         # Keep the committed representation predictable for subsequent edits
         # and screenshots while still preserving exact physics in the signal.
-        editor.setText(f"{value:.12g}")
+        # Eight significant digits match the initial editor representation and
+        # are ample for an interactive coefficient field.  The model signal
+        # still carries the full parsed float, so display shortening never
+        # changes the physics.
+        display = f"{value:.8g}"
+        editor.setText(display)
+        # A freshly committed fraction can be wider than the original value
+        # used to size this proxy (for example ``1`` → ``0.333333333333``).
+        # Resize before the next rail layout pass so the complete text and
+        # border remain visible at every UI scale.
+        editor.setFixedWidth(_strength_editor_width(editor, display))
+        # Keep the beginning (especially the leading ``0.``) visible after a
+        # commit.  QLineEdit otherwise places its horizontal viewport at the
+        # cursor end, making a valid value look clipped even when the field is
+        # wide enough to show it in full.
+        editor.setCursorPosition(0)
+        QTimer.singleShot(0, self._reflow_editors)
         editor.setProperty("hvisualizer-original-strength", value)
         self.hoppingStrengthEdited.emit(int(row), value)

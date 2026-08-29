@@ -1023,6 +1023,39 @@ def test_hopping_strength_uses_table_row_after_blank_row():
     assert panel.hop_table.item(0, 5) is None
 
 
+def test_site_position_edit_uses_table_row_after_blank_row():
+    """A blank site row must not redirect a canvas drag to another site."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    panel = win.panel
+    original = panel.get_site_rows()
+    panel.site_table.insertRow(0)
+
+    panel.update_site_position(0, 0.25, 0.75)
+
+    assert panel.site_table.item(0, 0) is None
+    assert panel.site_table.item(0, 1) is None
+    assert panel.site_table.item(1, 0).text() == "0.25"
+    assert panel.site_table.item(1, 1).text() == "0.75"
+    rows = panel.get_site_rows()
+    assert rows[0][:2] == pytest.approx((0.25, 0.75))
+    assert rows[1][0] == pytest.approx(original[1][0])
+
+
+def test_site_delete_uses_table_row_after_blank_row():
+    """Deleting a compact site index removes the corresponding populated row."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    panel = win.panel
+    panel.site_table.insertRow(0)
+
+    panel.remove_site(0)
+
+    assert panel.site_table.item(0, 0) is None
+    assert panel.site_table.item(1, 0) is not None
+    assert len(panel.get_site_rows()) == 1
+
+
 def test_edit_mode_renders_one_strength_editor_per_physical_bond():
     _app, win, ctrl = _window()
     ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))

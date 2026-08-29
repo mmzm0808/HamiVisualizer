@@ -266,6 +266,11 @@ class ControlPanel(QWidget):
         super().__init__(parent)
         self._param_names: list[str] = []
         self._cell_vectors: tuple[tuple[float, float], tuple[float, float]] | None = None
+        # ``get_site_rows`` exposes a compact, contiguous model index, while
+        # the editable table may temporarily contain blank rows.  Keep the
+        # reverse mapping so canvas edits never write a compact index into a
+        # different physical QTableWidget row.
+        self._site_table_rows: list[int] = []
         self._updating_cell = False
         # Styling relation tooltips writes item data.  QTableWidget reports
         # those writes through cellChanged, so guard the presentation pass
@@ -1178,6 +1183,7 @@ class ControlPanel(QWidget):
 
     def get_site_rows(self) -> list[tuple]:
         rows = []
+        table_rows: list[int] = []
         for r in range(self.site_table.rowCount()):
             vals = [self._cell(self.site_table, r, c) for c in range(len(SITE_COLS))]
             if not any(vals):
@@ -1190,7 +1196,24 @@ class ControlPanel(QWidget):
                 raise ValueError(f"格点表第 {r + 1} 行 x/y 必须有限")
             sub = vals[2].strip() or None
             rows.append((x, y, sub))
+            table_rows.append(r)
+        self._site_table_rows = table_rows
         return rows
+
+    def _refresh_site_table_rows(self) -> list[int]:
+        """Return compact-site → physical table-row mapping.
+
+        This intentionally only inspects whether a row is populated.  Full
+        numeric validation remains centralized in :meth:`get_site_rows`, so
+        a canvas edit can still report the original invalid row on the next
+        rebuild instead of raising a surprising mapping exception here.
+        """
+        self._site_table_rows = [
+            row for row in range(self.site_table.rowCount())
+            if any(self._cell(self.site_table, row, col)
+                   for col in range(len(SITE_COLS)))
+        ]
+        return list(self._site_table_rows)
 
     def get_cell_size(self) -> tuple[float, float] | None:
         if self._cell_vectors is not None:
@@ -1364,6 +1387,7 @@ class ControlPanel(QWidget):
 
     def set_lattice_rows(self, sites):
         self._fill_table(self.site_table, SITE_COLS, [(x, y, s or "") for x, y, s in sites])
+        self._site_table_rows = list(range(self.site_table.rowCount()))
         self._update_resource_hint()
 
     def set_hop_rows(self, hops):
@@ -1567,11 +1591,14 @@ class ControlPanel(QWidget):
         )
 
     def update_site_position(self, index: int, x: float, y: float):
-        if not 0 <= index < self.site_table.rowCount():
+        table_rows = self._refresh_site_table_rows()
+        if not 0 <= int(index) < len(table_rows):
+            self.set_error("所选格点行为空或已失效，请重新选择格点")
             return
+        table_row = table_rows[int(index)]
         self.site_table.blockSignals(True)
-        self.site_table.setItem(index, 0, QTableWidgetItem(f"{float(x):.12g}"))
-        self.site_table.setItem(index, 1, QTableWidgetItem(f"{float(y):.12g}"))
+        self.site_table.setItem(table_row, 0, QTableWidgetItem(f"{float(x):.12g}"))
+        self.site_table.setItem(table_row, 1, QTableWidgetItem(f"{float(y):.12g}"))
         self.site_table.blockSignals(False)
         self._emit_changed()
 
@@ -1580,11 +1607,19 @@ class ControlPanel(QWidget):
 
     def remove_site(self, index: int):
         """Remove a site and all incident hops; reindex remaining endpoints."""
-        if not 0 <= index < self.site_table.rowCount():
+        table_rows = self._refresh_site_table_rows()
+        if not 0 <= int(index) < len(table_rows):
+            self.set_error("所选格点行为空或已失效，请重新选择格点")
             return
+        index = int(index)
+        table_row = table_rows[index]
         self.site_table.blockSignals(True)
         self.hop_table.blockSignals(True)
-        self.site_table.removeRow(index)
+        self.site_table.removeRow(table_row)
+        self._site_table_rows = [
+            row - 1 if row > table_row else row
+            for row in table_rows if row != table_row
+        ]
         for row in range(self.hop_table.rowCount() - 1, -1, -1):
             try:
                 fr = int(self._cell(self.hop_table, row, 1))

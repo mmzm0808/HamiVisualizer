@@ -1588,6 +1588,38 @@ def test_clicking_site_guide_or_hop_editor_is_non_destructive():
     assert (len(scene.items()), len(scene._edit_items), win.panel.hop_table.rowCount()) == before
 
 
+def test_plain_site_click_is_non_mutating_for_all_default_templates():
+    """普通点击在每个内置模型上都只选择，不让格点或连线凭空消失。"""
+    _app, win, ctrl = _window()
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    for template_name in TEMPLATE_NAMES:
+        ctrl.apply_document(template_document(
+            template_name, boundary_kind="semi", nx=4, ny=3,
+            connectivity="最近邻",
+        ))
+        if win.lattice_mode_btn.isChecked():
+            win.lattice_mode_btn.setChecked(False)
+        win.lattice_mode_btn.setChecked(True)
+        ctrl.fit_all(force=True)
+        QApplication.processEvents()
+        scene, view = win.lattice_scene, win.lattice_gv
+        before = deepcopy(ctrl.current_document())
+        assert scene._edit_items, template_name
+        site_index, handle = next(iter(scene._edit_items.items()))
+        QTest.mouseClick(
+            view.viewport(), Qt.LeftButton,
+            pos=view.mapFromScene(handle.scenePos()),
+        )
+        QApplication.processEvents()
+        assert ctrl.current_document() == before, template_name
+        assert site_index in scene._edit_items, template_name
+        assert scene._hop_start is None, template_name
+        assert not scene.hop_creation_mode, template_name
+        win.lattice_mode_btn.setChecked(False)
+
+
 def test_explicit_bond_tool_rebuilds_without_losing_sites(monkeypatch):
     """A completed visual bond action is one safe, self-terminating edit."""
     _app, win, ctrl = _window()

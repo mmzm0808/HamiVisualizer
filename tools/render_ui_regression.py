@@ -19,7 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PySide6.QtCore import QPoint, QThreadPool
+from PySide6.QtCore import QPoint, QThreadPool, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from hamivisualizer.controller import ViewController
@@ -150,6 +151,10 @@ def main() -> int:
     parser.add_argument(
         "--history-demo", action="store_true",
         help="Create one in-memory site edit and open the Edit menu for undo-label screenshots.",
+    )
+    parser.add_argument(
+        "--plain-click-demo", action="store_true",
+        help="Click one visible edit handle and render the non-mutating selection feedback.",
     )
     parser.add_argument(
         "--connectivity", choices=("仅格点", "最近邻", "最近邻+次近邻"),
@@ -485,6 +490,14 @@ def main() -> int:
         window.panel.sites_group.setExpanded(True)
         window.panel.hops_group.setExpanded(False)
         window.lattice_mode_btn.setChecked(True)
+    if args.plain_click_demo:
+        window.tabs.setCurrentIndex(2)
+        window.panel.params_group.setExpanded(False)
+        window.panel.energy_group.setExpanded(False)
+        window.panel.display_group.setExpanded(False)
+        window.panel.sites_group.setExpanded(True)
+        window.panel.hops_group.setExpanded(False)
+        window.lattice_mode_btn.setChecked(True)
     if args.restore_topology_demo:
         # Exercise the user-facing recovery path after a topology experiment:
         # one valid original bond and one bond that points to a newly-added
@@ -556,6 +569,24 @@ def main() -> int:
         window.lattice_scene.activate_hop_editor(args.select_hop_row)
     controller.fit_all(force=True)
 
+    if args.plain_click_demo:
+        # Use the same viewport event path as a user click, rather than
+        # calling ``activate_site`` directly.  This catches accidental pan,
+        # stale tool state, and proxy hit-testing regressions.
+        QApplication.processEvents()
+        if not window.lattice_scene._edit_items:
+            raise ValueError("--plain-click-demo requires at least one editable site")
+        before_click = deepcopy(controller.current_document())
+        handle = next(iter(window.lattice_scene._edit_items.values()))
+        point = window.lattice_gv.mapFromScene(handle.scenePos())
+        QTest.mouseClick(
+            window.lattice_gv.viewport(), Qt.LeftButton,
+            pos=point,
+        )
+        QApplication.processEvents()
+        if controller.current_document() != before_click:
+            raise AssertionError("普通点击不应修改模型文档")
+
     target_view = {
         "combined": window.combined_matrix_gv,
         "matrix": window.matrix_gv,
@@ -600,6 +631,12 @@ def main() -> int:
             # restore the operation feedback so every scale documents the
             # undo path rather than the harness setup.
             window.statusBar().showMessage("已撤销：恢复编辑前构型")
+        if args.plain_click_demo:
+            # Keep the actual click feedback visible after the scale control
+            # reports its own change; the status bar is part of this audit.
+            window.statusBar().showMessage(
+                "已选择格点 1；拖动可移动，Delete 可删除；如需连线请先点击‘添加跃迁’"
+            )
         if args.matrix_selection_demo or args.matrix_copy_demo:
             window.tabs.setCurrentIndex(1)
             window._on_matrix_cell_clicked(0, 1 if window.matrix_scene._data.n > 1 else 0)

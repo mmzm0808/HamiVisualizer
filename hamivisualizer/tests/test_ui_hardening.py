@@ -39,8 +39,9 @@ from hamivisualizer.view.dialogs import HoppingDialog, TemplateDialog
 from hamivisualizer.view.matrix_view import MARGIN, MatrixView, RASTER_THRESHOLD
 from hamivisualizer.view.band_view import BandView
 from hamivisualizer.view.lattice_view import LatticeView, _parse_positive_strength
-from hamivisualizer.view.rendermodel import LatticeSceneData, MatrixSceneData
+from hamivisualizer.view.rendermodel import LatticeSceneData, MatrixSceneData, WfSceneData
 from hamivisualizer.view.zoom_view import ZoomGraphicsView
+from hamivisualizer.view.wavefunction_view import WavefunctionView
 from hamivisualizer.model.symbolic import ElementFormatter
 
 
@@ -2080,6 +2081,22 @@ def test_lattice_labels_scale_with_view_and_sites_stay_compact():
     assert labels
     assert all(not (item.flags() & QGraphicsItem.ItemIgnoresTransformations)
                for item in labels)
+
+
+def test_wavefunction_markers_follow_site_spacing_without_covering_neighbors():
+    """波函数圆点按几何间距缩放，不应遮住相邻格点。"""
+    QApplication.instance() or QApplication([])
+    view = WavefunctionView()
+    view.set_data(WfSceneData(
+        energies=np.array([0.0]),
+        wf=np.array([[1.0], [0.5], [0.25], [0.75]]),
+        positions=((0.0, 0.0), (0.5, 0.0), (1.0, 0.0), (1.5, 0.0)),
+        title="SSH",
+    ))
+    circles = [item for item in view.scene.items()
+               if isinstance(item, QGraphicsEllipseItem)]
+    assert len(circles) == 4
+    assert max(item.rect().width() for item in circles) <= 0.34
 
 
 def test_vector_editor_stays_within_control_rail_at_large_ui_scale():

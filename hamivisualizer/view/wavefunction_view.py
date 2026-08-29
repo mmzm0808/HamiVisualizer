@@ -38,6 +38,45 @@ def _hot_color(t: float) -> QColor:
     return QColor(255, int(230 - 160 * k), 0)
 
 
+def _site_marker_radius(positions: list[tuple[float, float]]) -> float:
+    """Return a compact marker radius in the same scene units as ``positions``.
+
+    The old renderer used a fixed ``0.42`` radius.  That looked acceptable for
+    a sparse toy lattice but covered neighbouring sites in the SSH and
+    honeycomb defaults (where the nearest spacing is about ``0.5``).  Keep the
+    radius tied to the actual geometry so zooming remains a view operation and
+    never changes the physical layout.  The pairwise path is deliberately
+    bounded; very large wave-function samples use conservative axis-spacing
+    estimates instead of allocating an ``N×N`` matrix.
+    """
+    count = len(positions)
+    if count <= 1:
+        return 0.20
+    coords = np.asarray(positions, dtype=float)
+    if coords.ndim != 2 or coords.shape[1] != 2 or not np.all(np.isfinite(coords)):
+        return 0.16
+
+    spacing = float("inf")
+    if count <= 2048:
+        delta = coords[:, None, :] - coords[None, :, :]
+        distances = np.sqrt(np.einsum("ijk,ijk->ij", delta, delta))
+        np.fill_diagonal(distances, np.inf)
+        spacing = float(np.min(distances))
+    else:
+        # A safe O(N log N) fallback for unusually large samples.  It may
+        # underestimate a diagonal nearest-neighbour distance, which only
+        # makes markers slightly smaller (never overlapping).
+        for axis in (0, 1):
+            values = np.sort(coords[:, axis])
+            differences = np.diff(values)
+            positive = differences[differences > 1e-8]
+            if positive.size:
+                spacing = min(spacing, float(np.min(positive)))
+    if not np.isfinite(spacing) or spacing <= 1e-8:
+        spacing = 0.5
+    return float(np.clip(0.32 * spacing, 0.10, 0.24))
+
+
 class WavefunctionView(QWidget):
     """|ψ|² 热图控件 (含态选择 QComboBox)."""
 
@@ -223,7 +262,7 @@ class WavefunctionView(QWidget):
         pad = 0.6
         self.scene.setSceneRect(QRectF(min(xs) - pad, min(ys) - pad,
                                        max(xs) - min(xs) + 2 * pad, max(ys) - min(ys) + 2 * pad))
-        r = 0.42
+        r = _site_marker_radius(pos)
         scale = float(np.max(col)) or 1.0
         for i, (x, y) in enumerate(pos):
             y = -y

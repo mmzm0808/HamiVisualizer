@@ -63,6 +63,10 @@ HOP_COLS = ["name", "from", "to", "dx", "dy", "amp", "mode", "phase", "sign"]
 # stays in the table tooltip and context help; these short, conventional
 # labels remain legible at 80–180% application scale.
 HOP_HEADERS = ["名称", "从", "到", "Δx", "Δy", "幅度", "相位模式", "相位", "符号"]
+# Endpoints are deliberately one-based in the visible editor.  The model and
+# persisted JSON remain zero-based, so the conversion is kept at this single
+# UI boundary instead of leaking into the Hamiltonian builder.
+HOP_ENDPOINT_COLUMNS = (1, 2)
 PARAM_COLS = ["参数", "数值", "滑块"]
 
 # 参数滑块配置: name → (int_min, int_max, scale)  value = 滑块整数 × scale
@@ -1031,7 +1035,10 @@ class ControlPanel(QWidget):
             return
         try:
             nx, ny = self.get_dim()
-            basis_sites = max(1, int(self.site_table.rowCount()))
+            # Blank rows are a table-editing convenience, not physical basis
+            # sites.  Counting them here made the preflight estimate look
+            # larger than the model the user would actually calculate.
+            basis_sites = max(1, len(self._refresh_site_table_rows()))
             semi = self.is_semi()
             cells = ny if semi else nx * ny
             nat = basis_sites * cells
@@ -1366,10 +1373,21 @@ class ControlPanel(QWidget):
             sign = integer(8, "sign", "1")
             if sign not in {-1, 1}:
                 raise ValueError(f"跃迁表第 {r + 1} 行 sign 必须是 +1 或 -1")
+            endpoint_count = len(self._refresh_site_table_rows())
+            def endpoint(col: int, label: str) -> int:
+                display_value = integer(col, label)
+                if not 1 <= display_value <= endpoint_count:
+                    upper = max(1, endpoint_count)
+                    raise ValueError(
+                        f"跃迁表第 {r + 1} 行 {label} 必须是 1..{upper} 的格点编号，"
+                        f"得到 {display_value}"
+                    )
+                return display_value - 1
+
             rows.append((r, {
                 "name": vals[0].strip() or "t",
-                "from_site": integer(1, "from"),
-                "to_site": integer(2, "to"),
+                "from_site": endpoint(1, "from"),
+                "to_site": endpoint(2, "to"),
                 "off_x": integer(3, "off_x", "0"),
                 "off_y": integer(4, "off_y", "0"),
                 "amplitude": vals[5].strip() or "1.0",
@@ -1391,7 +1409,11 @@ class ControlPanel(QWidget):
         self._update_resource_hint()
 
     def set_hop_rows(self, hops):
-        self._fill_table(self.hop_table, HOP_COLS, hops)
+        # ``hops`` is the model-facing representation (zero-based endpoints).
+        # Keep the table friendly to humans by displaying conventional labels
+        # 1…N while preserving the zero-based payload on the next read.
+        display_rows = [self._hop_row_for_display(row) for row in hops]
+        self._fill_table(self.hop_table, HOP_COLS, display_rows)
         self._update_hop_relation_tooltips()
         self._update_hop_relation_hint()
 
@@ -1622,24 +1644,32 @@ class ControlPanel(QWidget):
         ]
         for row in range(self.hop_table.rowCount() - 1, -1, -1):
             try:
-                fr = int(self._cell(self.hop_table, row, 1))
-                to = int(self._cell(self.hop_table, row, 2))
+                # Table endpoints are one-based; reindex in compact internal
+                # coordinates, then write the result back as one-based.
+                fr_display = int(self._cell(self.hop_table, row, 1))
+                to_display = int(self._cell(self.hop_table, row, 2))
+                if fr_display < 1 or to_display < 1:
+                    continue
+                fr = fr_display - 1
+                to = to_display - 1
             except ValueError:
                 continue
             if index in (fr, to):
                 self.hop_table.removeRow(row)
                 continue
             if fr > index:
-                self.hop_table.setItem(row, 1, QTableWidgetItem(str(fr - 1)))
+                self.hop_table.setItem(row, 1, QTableWidgetItem(str(fr)))
             if to > index:
-                self.hop_table.setItem(row, 2, QTableWidgetItem(str(to - 1)))
+                self.hop_table.setItem(row, 2, QTableWidgetItem(str(to)))
         self.site_table.blockSignals(False)
         self.hop_table.blockSignals(False)
         self._update_hop_relation_tooltips()
         self._emit_changed()
 
     def append_hop(self, row, *, reveal_relation: bool = False):
-        self._add_row(self.hop_table, row)
+        # Dialogs and canvas tools emit model-facing zero-based endpoints;
+        # format them once here for the one-based visible table.
+        self._add_row(self.hop_table, self._hop_row_for_display(row))
         # Canvas-created bonds arrive through this common path, rather than
         # through the side-panel relation menu.  Keep the physical relation
         # immediately discoverable and the summary synchronized in both
@@ -1662,14 +1692,18 @@ class ControlPanel(QWidget):
         multi-site model appear to ignore the user's selection.  Invalid or
         absent selections still use the deterministic first-pair fallback.
         """
-        site_count = self.site_table.rowCount()
+        # The canvas/model use compact valid-site indices.  A temporarily
+        # blank table row must not become a phantom endpoint (particularly in
+        # one-site models, where it used to turn the safe inter-cell starter
+        # into an invalid 0→1 intra-cell bond).
+        site_count = len(self._refresh_site_table_rows())
         if site_count <= 1:
             return 0, 0
         selected = self.hop_table.currentRow()
         if 0 <= selected < self.hop_table.rowCount():
             try:
-                from_site = int(self._cell(self.hop_table, selected, 1).strip())
-                to_site = int(self._cell(self.hop_table, selected, 2).strip())
+                from_site = int(self._cell(self.hop_table, selected, 1).strip()) - 1
+                to_site = int(self._cell(self.hop_table, selected, 2).strip()) - 1
             except (TypeError, ValueError):
                 pass
             else:
@@ -1682,7 +1716,7 @@ class ControlPanel(QWidget):
         from_site, to_site = self._default_hop_sites()
         self._add_row(
             self.hop_table,
-            ["t", from_site, to_site, int(off_x), int(off_y), "-t", "none", "0", 1],
+            ["t", from_site + 1, to_site + 1, int(off_x), int(off_y), "-t", "none", "0", 1],
         )
         row = self.hop_table.rowCount() - 1
         self.hop_table.selectRow(row)
@@ -1707,7 +1741,7 @@ class ControlPanel(QWidget):
         from_site, to_site = self._default_hop_sites()
         dialog = HoppingDialog(
             from_site, to_site, self, semi=self.is_semi(),
-            site_count=self.site_table.rowCount(),
+            site_count=len(self._refresh_site_table_rows()),
         )
         custom_index = dialog.cell_relation.findData("custom")
         if custom_index >= 0:
@@ -1738,7 +1772,7 @@ class ControlPanel(QWidget):
         # a right inter-cell bond; multi-site models start with the intuitive
         # intra-cell 0→1 bond.  The menu next to this button exposes all
         # relations explicitly.
-        if self.site_table.rowCount() <= 1:
+        if len(self._refresh_site_table_rows()) <= 1:
             self._add_hop_with_offset(1, 0)
         else:
             self._add_hop_with_offset(0, 0)
@@ -1749,6 +1783,28 @@ class ControlPanel(QWidget):
     def _cell(table: QTableWidget, row: int, col: int) -> str:
         it = table.item(row, col)
         return it.text() if it is not None else ""
+
+    @staticmethod
+    def _hop_row_for_display(row) -> list:
+        """Convert one model hop row to the human-facing table numbering.
+
+        The conversion is intentionally tolerant while a row is being built:
+        malformed endpoint text is left untouched so the normal table parser
+        can report a precise validation error instead of failing during a UI
+        refresh.
+        """
+        values = list(row)
+        for col in HOP_ENDPOINT_COLUMNS:
+            if col >= len(values) or values[col] is None:
+                continue
+            text = str(values[col]).strip()
+            if not text:
+                continue
+            try:
+                values[col] = int(text) + 1
+            except (TypeError, ValueError):
+                pass
+        return values
 
     @staticmethod
     def _fill_table(table: QTableWidget, cols, data):

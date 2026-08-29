@@ -1056,6 +1056,37 @@ def test_site_delete_uses_table_row_after_blank_row():
     assert len(panel.get_site_rows()) == 1
 
 
+def test_new_hopping_starter_ignores_blank_site_rows():
+    """One-site models keep a valid inter-cell starter after table gaps."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("空白自定义", connectivity="仅格点"))
+    panel = win.panel
+    panel.site_table.insertRow(0)
+
+    panel._add_default_hop()
+
+    row = panel.hop_table.rowCount() - 1
+    # The editor shows conventional one-based labels, while the parsed model
+    # payload remains zero-based for the Hamiltonian builder.
+    assert panel.hop_table.item(row, 1).text() == "1"
+    assert panel.hop_table.item(row, 2).text() == "1"
+    assert panel.hop_table.item(row, 3).text() == "1"
+    assert panel.hop_table.item(row, 4).text() == "0"
+    parsed = panel.get_hop_rows()[-1]
+    assert (parsed["from_site"], parsed["to_site"]) == (0, 0)
+
+
+def test_hopping_table_displays_one_based_endpoints_but_parses_zero_based():
+    """Visible hop labels match lattice labels without changing file semantics."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    panel = win.panel
+    assert panel.hop_table.item(0, 1).text() == "1"
+    assert panel.hop_table.item(0, 2).text() == "2"
+    assert (panel.get_hop_rows()[0]["from_site"],
+            panel.get_hop_rows()[0]["to_site"]) == (0, 1)
+
+
 def test_edit_mode_renders_one_strength_editor_per_physical_bond():
     _app, win, ctrl = _window()
     ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))

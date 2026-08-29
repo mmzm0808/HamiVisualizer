@@ -1620,6 +1620,57 @@ def test_plain_site_click_is_non_mutating_for_all_default_templates():
         win.lattice_mode_btn.setChecked(False)
 
 
+def test_real_press_move_release_drag_updates_site_and_keeps_hops():
+    """A real viewport drag must edit one site without dropping topology."""
+    _app, win, ctrl = _window()
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    for template_name in TEMPLATE_NAMES:
+        ctrl.apply_document(template_document(
+            template_name, boundary_kind="semi", nx=4, ny=3,
+            connectivity="最近邻",
+        ))
+        win.lattice_mode_btn.setChecked(True)
+        ctrl.fit_all(force=True)
+        QApplication.processEvents()
+        scene, view = win.lattice_scene, win.lattice_gv
+        before = deepcopy(ctrl.current_document())
+        assert scene._edit_items, template_name
+        site_index, handle = next(iter(scene._edit_items.items()))
+        point = view.mapFromScene(handle.scenePos())
+        moved_point = point + QPoint(80, 35)
+        device = QPointingDevice.primaryPointingDevice()
+
+        def send(kind, pos, button, buttons):
+            event = QMouseEvent(
+                kind, QPointF(pos), QPointF(pos), QPointF(pos),
+                button, buttons, Qt.NoModifier,
+                Qt.MouseEventSynthesizedByApplication, device,
+            )
+            QApplication.sendEvent(view.viewport(), event)
+            QApplication.processEvents()
+
+        QTest.mousePress(view.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+        QApplication.processEvents()
+        send(QEvent.MouseMove, moved_point, Qt.NoButton, Qt.LeftButton)
+        QTest.mouseRelease(view.viewport(), Qt.LeftButton, Qt.NoModifier, moved_point)
+        QApplication.processEvents()
+
+        after = ctrl.current_document()
+        assert after["sites"] != before["sites"], template_name
+        assert len(after["hops"]) == len(before["hops"]), template_name
+        assert site_index < len(after["sites"]), template_name
+        # A drag is a committed edit, not a latent pointer state.
+        assert not scene._hop_creation_mode, template_name
+        win._restore_edit_baseline()
+        QApplication.processEvents()
+        assert ctrl.current_document()["sites"] == before["sites"], template_name
+        assert len(ctrl.current_document()["hops"]) == len(before["hops"]), template_name
+        win.lattice_mode_btn.setChecked(False)
+        QApplication.processEvents()
+
+
 def test_explicit_bond_tool_rebuilds_without_losing_sites(monkeypatch):
     """A completed visual bond action is one safe, self-terminating edit."""
     _app, win, ctrl = _window()

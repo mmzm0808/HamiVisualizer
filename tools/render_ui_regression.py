@@ -19,7 +19,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from PySide6.QtCore import QPoint, QThreadPool, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QThreadPool, Qt
+from PySide6.QtGui import QMouseEvent, QPointingDevice
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -155,6 +156,10 @@ def main() -> int:
     parser.add_argument(
         "--plain-click-demo", action="store_true",
         help="Click one visible edit handle and render the non-mutating selection feedback.",
+    )
+    parser.add_argument(
+        "--drag-snap-demo", action="store_true",
+        help="Perform a real press-move-release on one edit handle and render the clamped snap result.",
     )
     parser.add_argument(
         "--connectivity", choices=("仅格点", "最近邻", "最近邻+次近邻"),
@@ -483,7 +488,7 @@ def main() -> int:
         # rather than pretending a background result already exists.
         if window.wf_view._data is not None:
             window.wf_view.select_energy(args.energy)
-    if args.edit_lattice:
+    if args.edit_lattice or args.drag_snap_demo:
         window.panel.params_group.setExpanded(False)
         window.panel.energy_group.setExpanded(False)
         window.panel.display_group.setExpanded(False)
@@ -587,6 +592,36 @@ def main() -> int:
         if controller.current_document() != before_click:
             raise AssertionError("普通点击不应修改模型文档")
 
+    if args.drag_snap_demo:
+        # Exercise the same press/move/release path as a user.  QTest handles
+        # the platform mouse grab for the press/release; the middle move is a
+        # synthesized viewport event carrying LeftButton, which is reliable
+        # on the off-screen Qt backend as well.
+        if not window.lattice_scene._edit_items:
+            raise ValueError("--drag-snap-demo requires at least one editable site")
+        handle = next(iter(window.lattice_scene._edit_items.values()))
+        point = window.lattice_gv.mapFromScene(handle.scenePos())
+        moved_point = point + QPoint(80, 35)
+        QTest.mousePress(window.lattice_gv.viewport(), Qt.LeftButton,
+                         Qt.NoModifier, point)
+        device = QPointingDevice.primaryPointingDevice()
+        move_event = QMouseEvent(
+            QEvent.MouseMove, QPointF(moved_point), QPointF(moved_point),
+            QPointF(moved_point), Qt.NoButton, Qt.LeftButton, Qt.NoModifier,
+            Qt.MouseEventSynthesizedByApplication, device,
+        )
+        QApplication.sendEvent(window.lattice_gv.viewport(), move_event)
+        QTest.mouseRelease(window.lattice_gv.viewport(), Qt.LeftButton,
+                           Qt.NoModifier, moved_point)
+        QApplication.processEvents()
+        # ``update_site_position`` clamps the drag to the declared cell, so
+        # the current document must remain serializable after a fast pointer
+        # move even when the target lies outside the primitive cell.
+        controller.current_document()
+        window.statusBar().showMessage(
+            "已拖动格点 1；智能吸附已启用，坐标保持在元胞内"
+        )
+
     target_view = {
         "combined": window.combined_matrix_gv,
         "matrix": window.matrix_gv,
@@ -636,6 +671,13 @@ def main() -> int:
             # reports its own change; the status bar is part of this audit.
             window.statusBar().showMessage(
                 "已选择格点 1；拖动可移动，Delete 可删除；如需连线请先点击‘添加跃迁’"
+            )
+        if args.drag_snap_demo:
+            # UI-scale changes also emit a resource/status hint.  Re-assert
+            # the completed drag feedback so each evidence frame records the
+            # same user-facing result at every scale.
+            window.statusBar().showMessage(
+                "已拖动格点 1；智能吸附已启用，坐标保持在元胞内"
             )
         if args.matrix_selection_demo or args.matrix_copy_demo:
             window.tabs.setCurrentIndex(1)

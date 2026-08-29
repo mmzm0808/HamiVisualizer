@@ -130,7 +130,7 @@ class _EditableSiteItem(QGraphicsEllipseItem):
                 QApplication.keyboardModifiers() & Qt.AltModifier
             ):
                 p = self.editor_scene.snap_position(self.site_index, p, self._press_pos)
-            return p
+            return self.editor_scene.constrain_edit_position(p)
         return super().itemChange(change, value)
 
     def paint(self, painter, option, widget=None):
@@ -215,6 +215,12 @@ class _EditableSiteItem(QGraphicsEllipseItem):
             self.setPos(self._press_pos)
         if moved:
             anchor_x, anchor_y = self.editor_scene.edit_anchor_offset
+            # Alt temporarily disables magnetic snapping, not the model's
+            # validity rules.  Clamp the final coordinates before handing
+            # them to the panel so a fast drag cannot create an invalid cell.
+            constrained = self.editor_scene.constrain_edit_position(self.pos())
+            if constrained != self.pos():
+                self.setPos(constrained)
             self.editor_scene.siteMoved.emit(
                 self.site_index,
                 float(self.pos().x() - anchor_x),
@@ -420,6 +426,10 @@ class LatticeView(QGraphicsScene):
         # the primitive cell; this only prevents the handles from floating at
         # (0, 0) when a disk/hexagon mask excludes that cell.
         self._edit_anchor_offset = (0.0, 0.0)
+        # When the controller supplies the actual Bravais vectors, interactive
+        # drags are kept inside that primitive cell.  Stand-alone scenes used
+        # by plug-ins/tests may omit vectors and intentionally remain free.
+        self._edit_cell_constrained = False
         self._edit_items: dict[int, _EditableSiteItem] = {}
         self._ghost_items: list[_GhostSiteItem] = []
         self._edit_hops: list[dict] = []
@@ -647,6 +657,9 @@ class LatticeView(QGraphicsScene):
             self._active_hop_row = None
         if cell_vectors is not None:
             self._cell_vectors = tuple(tuple(map(float, vector)) for vector in cell_vectors)
+            self._edit_cell_constrained = True
+        else:
+            self._edit_cell_constrained = False
         if anchor_offset is not None:
             try:
                 ax, ay = map(float, anchor_offset)
@@ -664,6 +677,42 @@ class LatticeView(QGraphicsScene):
             self.snap_step = max(0.001, float(snap_step))
         if self._data is not None:
             self.set_data(self._data)
+
+    def constrain_edit_position(self, point: QPointF) -> QPointF:
+        """Keep a dragged primitive-cell site inside its Bravais cell.
+
+        The persistence layer quite correctly rejects coordinates outside the
+        declared cell.  A canvas drag, however, should never leave the model
+        in that invalid intermediate state.  Project the pointer into the
+        parallelogram in fractional ``(u, v)`` coordinates and leave
+        stand-alone scenes unconstrained when no vectors were supplied.
+        """
+        point = QPointF(point)
+        if not self._edit_cell_constrained:
+            return point
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
+        det = a1x * a2y - a1y * a2x
+        if abs(det) < 1e-12:
+            return point
+        anchor_x, anchor_y = self._edit_anchor_offset
+        x = point.x() - anchor_x
+        y = -point.y() - anchor_y
+        u = (x * a2y - y * a2x) / det
+        v = (a1x * y - a1y * x) / det
+        # Keep the upper edge strictly inside: validation uses u/v < 1.
+        # Keep a visible decimal margin as well as a mathematical one.  The
+        # coordinate table intentionally displays eight significant digits;
+        # an ``1-1e-9`` clamp would round back to ``1`` in that field and
+        # immediately fail the strict ``u/v < 1`` persistence check.
+        eps = 1e-7
+        cu = min(1.0 - eps, max(0.0, u))
+        cv = min(1.0 - eps, max(0.0, v))
+        if abs(cu - u) <= 1e-15 and abs(cv - v) <= 1e-15:
+            return point
+        return QPointF(
+            anchor_x + cu * a1x + cv * a2x,
+            -(anchor_y + cu * a1y + cv * a2y),
+        )
 
     def snap_position(self, index: int, point: QPointF,
                       drag_origin: QPointF | None = None) -> QPointF:

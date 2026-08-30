@@ -153,6 +153,7 @@ class MainWindow(QMainWindow):
         self.lattice_grid_btn.setToolTip(
             "编辑时显示可吸附的网格节点；网格间距由右侧“网格”数值调整，"
             "关闭只隐藏背景点，不会改变吸附规则。"
+            "矩形元胞沿 x/y 排列；斜元胞沿 a₁/a₂ 方向排列。"
             "格点外侧细实环表示当前吸附位置，虚线环表示进入编辑前可恢复的位置"
         )
         # Keep the snap granularity beside the mode switch.  The preference

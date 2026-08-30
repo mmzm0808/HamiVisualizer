@@ -578,6 +578,42 @@ class LatticeView(QGraphicsScene):
             self.removeItem(item)
         self._grid_items.clear()
 
+    def _bravais_grid_counts(self, step: float | None = None) -> tuple[int, int]:
+        """Return fractional subdivisions for an oblique editing grid.
+
+        ``snap_step`` is a physical target spacing, while an oblique cell has
+        no single global x/y interval.  Subdivide each primitive vector by
+        approximately that spacing instead.  The same counts are consumed by
+        drawing and snapping, so a visible dot is always a valid magnetic
+        target rather than a decorative point the editor cannot reach.
+        """
+        value = max(0.001, float(self.snap_step if step is None else step))
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
+        n1 = max(1, int(round(math.hypot(a1x, a1y) / value)))
+        n2 = max(1, int(round(math.hypot(a2x, a2y) / value)))
+        # Keep the presentation bounded on an accidentally tiny spacing while
+        # retaining a deterministic, near-square number of targets.
+        while n1 * n2 > 1800:
+            if n1 >= n2:
+                n1 = max(1, int(math.ceil(n1 / 1.25)))
+            else:
+                n2 = max(1, int(math.ceil(n2 / 1.25)))
+        return n1, n2
+
+    def _snap_local_point(self, x: float, y: float, step: float) -> tuple[float, float]:
+        """Round a local physical point in the same coordinates as the grid."""
+        if self._edit_cell_constrained:
+            (a1x, a1y), (a2x, a2y) = self._cell_vectors
+            det = a1x * a2y - a1y * a2x
+            if abs(det) >= 1e-12:
+                u = (x * a2y - y * a2x) / det
+                v = (a1x * y - a1y * x) / det
+                n1, n2 = self._bravais_grid_counts(step)
+                u = round(u * n1) / n1
+                v = round(v * n2) / n2
+                return u * a1x + v * a2x, u * a1y + v * a2y
+        return round(x / step) * step, round(y / step) * step
+
     def _snap_grid_bounds(self) -> QRectF:
         """Return the compact visual work area for snap targets.
 
@@ -640,63 +676,72 @@ class LatticeView(QGraphicsScene):
             return
         step = max(0.001, float(self.snap_step))
         anchor_x, anchor_y = self._edit_anchor_offset
-        nx = int(math.floor((rect.right() - anchor_x) / step)
-                 - math.ceil((rect.left() - anchor_x) / step) + 1)
-        # Scene y is inverted relative to physical y.  The interval below is
-        # nevertheless identical to snap_position's ``point.y + anchor_y``.
-        y_min = math.ceil((rect.top() + anchor_y) / step)
-        y_max = math.floor((rect.bottom() + anchor_y) / step)
-        ny = max(0, y_max - y_min + 1)
-        render_step = step
-        point_count = max(0, nx) * ny
-        if point_count > 1800:
-            multiplier = int(math.ceil(math.sqrt(point_count / 1800.0)))
-            render_step = step * max(1, multiplier)
-            nx = int(math.floor((rect.right() - anchor_x) / render_step)
-                     - math.ceil((rect.left() - anchor_x) / render_step) + 1)
-            y_min = math.ceil((rect.top() + anchor_y) / render_step)
-            y_max = math.floor((rect.bottom() + anchor_y) / render_step)
-            ny = max(0, y_max - y_min + 1)
-        if nx <= 0 or ny <= 0:
-            return
         dark = self._dark
         color = QColor(72, 105, 132, 120) if dark else QColor(115, 145, 168, 115)
-        radius = min(0.035, max(0.012, render_step * 0.10))
-        x_start = math.ceil((rect.left() - anchor_x) / render_step)
-        x_stop = math.floor((rect.right() - anchor_x) / render_step)
         if self._edit_cell_constrained:
             (a1x, a1y), (a2x, a2y) = self._cell_vectors
             cell_det = a1x * a2y - a1y * a2x
         else:
             cell_det = 0.0
-        for ix in range(x_start, x_stop + 1):
-            x = anchor_x + ix * render_step
-            for iy in range(y_min, y_max + 1):
-                y = iy * render_step - anchor_y
-                # The visual range is deliberately axis-aligned so it can
-                # reserve a small, predictable margin around an oblique
-                # primitive cell.  Do not show points from that bounding box
-                # which are outside the actual Bravais parallelogram: those
-                # targets look actionable but would be rejected by the site
-                # tool's fractional-cell validation.
-                if self._edit_cell_constrained:
-                    local_x = x - anchor_x
-                    local_y = -y - anchor_y
-                    if abs(cell_det) >= 1e-12:
-                        u = (local_x * a2y - local_y * a2x) / cell_det
-                        v = (a1x * local_y - a1y * local_x) / cell_det
-                        if not (-1e-9 <= u < 1.0 - 1e-9
-                                and -1e-9 <= v < 1.0 - 1e-9):
-                            continue
-                item = QGraphicsEllipseItem(x - radius, y - radius,
-                                            2 * radius, 2 * radius)
-                item.setBrush(QBrush(color))
-                item.setPen(Qt.NoPen)
-                item.setZValue(-1.0)
-                item.setAcceptedMouseButtons(Qt.NoButton)
-                item.setData(0, "snap-grid-node")
-                self.addItem(item)
-                self._grid_items.append(item)
+        if abs(cell_det) >= 1e-12:
+            # Oblique cells use their own fractional coordinate net.  A
+            # Cartesian dot field inside a slanted parallelogram is visually
+            # misleading: its rows do not follow either Bravais direction.
+            n1, n2 = self._bravais_grid_counts(step)
+            radius = min(0.035, max(0.012, step * 0.10))
+            for i in range(n1):
+                u = i / n1
+                for j in range(n2):
+                    v = j / n2
+                    x = anchor_x + u * a1x + v * a2x
+                    y = -(anchor_y + u * a1y + v * a2y)
+                    item = QGraphicsEllipseItem(x - radius, y - radius,
+                                                2 * radius, 2 * radius)
+                    item.setBrush(QBrush(color))
+                    item.setPen(Qt.NoPen)
+                    item.setZValue(-1.0)
+                    item.setAcceptedMouseButtons(Qt.NoButton)
+                    item.setData(0, "snap-grid-node")
+                    item.setData(1, "bravais-grid")
+                    self.addItem(item)
+                    self._grid_items.append(item)
+        else:
+            nx = int(math.floor((rect.right() - anchor_x) / step)
+                     - math.ceil((rect.left() - anchor_x) / step) + 1)
+            # Scene y is inverted relative to physical y.  The interval below
+            # is nevertheless identical to snap_position's ``point.y + anchor_y``.
+            y_min = math.ceil((rect.top() + anchor_y) / step)
+            y_max = math.floor((rect.bottom() + anchor_y) / step)
+            ny = max(0, y_max - y_min + 1)
+            render_step = step
+            point_count = max(0, nx) * ny
+            if point_count > 1800:
+                multiplier = int(math.ceil(math.sqrt(point_count / 1800.0)))
+                render_step = step * max(1, multiplier)
+                nx = int(math.floor((rect.right() - anchor_x) / render_step)
+                         - math.ceil((rect.left() - anchor_x) / render_step) + 1)
+                y_min = math.ceil((rect.top() + anchor_y) / render_step)
+                y_max = math.floor((rect.bottom() + anchor_y) / render_step)
+                ny = max(0, y_max - y_min + 1)
+            if nx <= 0 or ny <= 0:
+                return
+            radius = min(0.035, max(0.012, render_step * 0.10))
+            x_start = math.ceil((rect.left() - anchor_x) / render_step)
+            x_stop = math.floor((rect.right() - anchor_x) / render_step)
+            for ix in range(x_start, x_stop + 1):
+                x = anchor_x + ix * render_step
+                for iy in range(y_min, y_max + 1):
+                    y = iy * render_step - anchor_y
+                    item = QGraphicsEllipseItem(x - radius, y - radius,
+                                                2 * radius, 2 * radius)
+                    item.setBrush(QBrush(color))
+                    item.setPen(Qt.NoPen)
+                    item.setZValue(-1.0)
+                    item.setAcceptedMouseButtons(Qt.NoButton)
+                    item.setData(0, "snap-grid-node")
+                    item.setData(1, "cartesian-grid")
+                    self.addItem(item)
+                    self._grid_items.append(item)
 
         # The Cartesian fallback grid is intentionally simple and predictable
         # for custom rectangular cells.  Oblique presets (honeycomb, Kagome,
@@ -1115,10 +1160,12 @@ class LatticeView(QGraphicsScene):
                       drag_origin: QPointF | None = None) -> QPointF:
         """Grid snap plus magnetic restoration/alignment candidates.
 
-        The fixed 0.25 grid cannot represent graphene's sqrt(3)/2 coordinate.
-        We therefore prefer nearby exact model coordinates and the drag origin,
-        while retaining the configurable grid as a fallback.  Alt still means
-        completely free movement.
+        Rectangular cells use the Cartesian interval; oblique cells use
+        fractional subdivisions along ``a₁``/``a₂``.  Exact model coordinates
+        and the drag origin remain higher-priority magnetic candidates, so
+        graphene/Kagome basis sites stay reachable even when their fractions
+        are not an integer subdivision of the chosen interval.  Alt still
+        means completely free movement.
         """
         interactive_drag = drag_origin is not None
         if not self.snap_enabled:
@@ -1133,10 +1180,10 @@ class LatticeView(QGraphicsScene):
         # grid (e.g. sqrt(3)/2); snapping in global scene coordinates would
         # silently write those fractional offsets back into the site table.
         anchor_x, anchor_y = self._edit_anchor_offset
-        grid = QPointF(
-            round((point.x() - anchor_x) / step) * step + anchor_x,
-            round((point.y() + anchor_y) / step) * step - anchor_y,
-        )
+        local_x = float(point.x() - anchor_x)
+        local_y = float(-point.y() - anchor_y)
+        snapped_x, snapped_y = self._snap_local_point(local_x, local_y, step)
+        grid = QPointF(anchor_x + snapped_x, -(anchor_y + snapped_y))
         tolerance = max(0.08, step * 0.55)
         collision_tolerance = max(0.03, min(0.12, tolerance * 0.8))
         # Snap as a complete 2-D point.  The previous independent x/y
@@ -1390,8 +1437,7 @@ class LatticeView(QGraphicsScene):
         y = float(-scene_point.y() - anchor_y)
         if self.snap_enabled:
             step = max(0.001, float(self.snap_step))
-            x = round(x / step) * step
-            y = round(y / step) * step
+            x, y = self._snap_local_point(x, y, step)
 
         # A site table stores local primitive-cell coordinates.  Reject an
         # invalid click with an actionable status message instead of silently

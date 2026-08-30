@@ -2962,6 +2962,45 @@ def test_oblique_edit_sites_have_visible_snap_targets_at_their_exact_positions()
         ) <= 1e-6
 
 
+def test_oblique_snap_grid_and_rounding_share_bravais_fractional_coordinates():
+    """斜元胞背景点与新增/拖动吸附必须沿同一组 a1/a2 分数网格。"""
+    QApplication.instance() or QApplication([])
+    root3 = math.sqrt(3.0)
+    a1, a2 = (root3, 0.0), (root3 / 2.0, 1.5)
+    scene = LatticeView()
+    scene.set_edit_context(
+        [(0.0, 0.0, "A"), (root3 / 2.0, 0.5, "B")],
+        cell_vectors=(a1, a2), snap_step=0.25,
+    )
+    scene.set_edit_mode(True)
+    scene.set_data(LatticeSceneData(
+        sites=((0.0, 0.0, "1", "A"), (root3 / 2.0, 0.5, "2", "B"),
+               (root3, 0.0, "3", "A"), (root3 / 2.0, 1.5, "4", "B")),
+    ))
+    n1, n2 = scene._bravais_grid_counts()
+    grid = [item for item in scene.items()
+            if item.data(1) == "bravais-grid"]
+    assert grid
+    det = a1[0] * a2[1] - a1[1] * a2[0]
+    anchor_x, anchor_y = scene.edit_anchor_offset
+    for item in grid:
+        center = item.sceneBoundingRect().center()
+        x = center.x() - anchor_x
+        y = -center.y() - anchor_y
+        u = (x * a2[1] - y * a2[0]) / det
+        v = (a1[0] * y - a1[1] * x) / det
+        assert u == pytest.approx(round(u * n1) / n1, abs=1e-8)
+        assert v == pytest.approx(round(v * n2) / n2, abs=1e-8)
+
+    # The helper used by both dragging and the explicit site tool lands on
+    # the same fractional net, rather than independently rounding x/y.
+    snapped_x, snapped_y = scene._snap_local_point(0.61, 0.49, scene.snap_step)
+    u = (snapped_x * a2[1] - snapped_y * a2[0]) / det
+    v = (a1[0] * snapped_y - a1[1] * snapped_x) / det
+    assert u == pytest.approx(round(u * n1) / n1, abs=1e-8)
+    assert v == pytest.approx(round(v * n2) / n2, abs=1e-8)
+
+
 def test_edit_grid_marks_original_geometry_as_a_visible_restore_target():
     """拖动后原始位置仍有可见回归目标，并即时刷新。"""
     _app, win, ctrl = _window()

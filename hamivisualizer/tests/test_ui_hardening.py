@@ -70,6 +70,22 @@ def test_polishing_brief_codex_entries_are_newest_first():
     assert stamps == sorted(stamps, reverse=True)
 
 
+def test_polishing_brief_evidence_count_matches_project_artifacts():
+    """简报摘要中的截图数量存在项目证据目录时必须与实际一致。"""
+    repo = Path(__file__).resolve().parents[2]
+    artifacts = repo / ".codex-artifacts"
+    if not artifacts.is_dir():
+        pytest.skip("本地证据目录未随源码分发")
+    image_count = sum(
+        1 for path in artifacts.rglob("*")
+        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}
+    )
+    brief = (repo / "docs" / "持续打磨简报.md").read_text(encoding="utf-8")
+    match = re.search(r"当前项目保留 (\d+) 张 `\.codex-artifacts` 截图证据", brief)
+    assert match, "简报必须包含可审计的证据截图数量"
+    assert int(match.group(1)) == image_count
+
+
 def test_evidence_renderer_rejects_non_100_percent_output_scale():
     """离屏证据入口必须阻止混入150%/180%截图。"""
     from tools.render_ui_regression import (

@@ -116,6 +116,41 @@ def test_canvas_hopping_strength_accepts_safe_fraction_input():
         _parse_positive_strength("-1/3")
 
 
+def test_canvas_hop_edit_flushes_history_for_immediate_undo(tmp_path):
+    """画布提交后立即可撤回，不受普通输入防抖窗口影响。"""
+    _app, win, ctrl = _window()
+    win._workspace_root = tmp_path
+    win.preferences.autosave = False
+    win.enable_workspace_mode(ctrl)
+    win.resize(1400, 900)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    win.lattice_coeff_btn.setChecked(True)
+    QApplication.processEvents()
+
+    proxy = win.lattice_scene._edit_proxies[0]
+    editor = proxy.widget()
+    point = win.lattice_gv.mapFromScene(proxy.pos())
+    point += QPoint(editor.width() // 2, editor.height() // 2)
+    QTest.mouseClick(win.lattice_gv.viewport(), Qt.LeftButton, pos=point)
+    assert editor.hasFocus()
+    editor.selectAll()
+    QTest.keyClicks(editor, "1/3")
+    QTest.keyClick(editor, Qt.Key_Return)
+    QApplication.processEvents()
+
+    assert win._sessions[0].history.can_undo
+    assert ctrl.current_document()["params"]["t"] == pytest.approx(1 / 3)
+    win.undo()
+    QApplication.processEvents()
+    assert ctrl.current_document()["params"]["t"] == pytest.approx(1.0)
+    assert win._sessions[0].history.can_redo
+    win.redo()
+    QApplication.processEvents()
+    assert ctrl.current_document()["params"]["t"] == pytest.approx(1 / 3)
+
+
 def test_history_actions_name_the_next_edit_to_undo(tmp_path):
     _app, win, ctrl = _window()
     win._workspace_root = tmp_path

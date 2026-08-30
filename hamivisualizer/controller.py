@@ -644,6 +644,18 @@ class ViewController(QObject):
         if panel.error_label.text():
             return
         self.window.lattice_scene.update_hop_strength(int(row), float(strength))
+        # A canvas coefficient commit is an explicit, completed edit rather
+        # than a stream of keystrokes.  The panel's generic ``changed`` signal
+        # normally starts the debounce timer, which leaves a short interval
+        # where Ctrl+Z has no snapshot yet.  Record the committed document now
+        # so undo is immediately available, but keep the scheduled rebuild:
+        # rebuilding synchronously would destroy the focused proxy widget and
+        # make the editor appear to jump away under the user's cursor.  The
+        # later rebuild compares equal and therefore does not create a second
+        # history entry.
+        callback = getattr(self.window, "document_committed", None)
+        if callback is not None:
+            callback(self._current_document())
 
     def _on_display_changed(self, reason: str):
         """Apply presentation-only options without rebuilding the Hamiltonian."""

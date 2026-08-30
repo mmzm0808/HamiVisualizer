@@ -152,7 +152,8 @@ class MainWindow(QMainWindow):
         self.lattice_grid_btn.setChecked(True)
         self.lattice_grid_btn.setToolTip(
             "编辑时显示可吸附的网格节点；网格间距由右侧“网格”数值调整，"
-            "关闭只隐藏背景点，不会改变吸附规则"
+            "关闭只隐藏背景点，不会改变吸附规则。"
+            "格点外侧细实环表示当前吸附位置，虚线环表示进入编辑前可恢复的位置"
         )
         # Keep the snap granularity beside the mode switch.  The preference
         # dialog remains the durable/global fallback, while an editor-local
@@ -588,7 +589,8 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(2)
             self.statusBar().showMessage(
                 f"编辑模式：{'智能吸附' if self.lattice_snap_btn.isChecked() else '自由移动'}；"
-                "单击格点仅选择；拖动可移动；用显式工具添加格点或跃迁；点击跃迁线改系数"
+                "单击格点仅选择；拖动可移动；细实环=当前位置，虚线环=编辑前位置；"
+                "用显式工具添加格点或跃迁；点击跃迁线改系数"
             )
         else:
             self.lattice_add_site_btn.blockSignals(True)

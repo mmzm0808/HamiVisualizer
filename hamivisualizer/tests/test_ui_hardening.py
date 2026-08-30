@@ -2846,6 +2846,9 @@ def test_edit_canvas_draws_snap_grid_nodes_and_toolbar_spacing_updates_them():
     QApplication.processEvents()
     scene = win.lattice_scene
     assert scene.grid_visible
+    assert "细实环=当前位置" in win.statusBar().currentMessage()
+    assert "虚线环=编辑前位置" in win.statusBar().currentMessage()
+    assert "虚线环表示进入编辑前可恢复的位置" in win.lattice_grid_btn.toolTip()
     assert win.lattice_grid_btn.text() == "网格点"
     assert win.lattice_snap_step_widget.findChildren(QLabel)[0].text() == "间距"
     dots = [item for item in scene.items()

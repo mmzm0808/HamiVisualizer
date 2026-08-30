@@ -813,6 +813,84 @@ def test_all_presets_and_finite_shapes_build_hermitian_matrices():
     assert cases == len(TEMPLATE_NAMES) * (1 + len(BOUNDARY_SHAPES))
 
 
+def test_all_presets_connectivity_and_boundary_combinations_are_hermitian():
+    """Regression matrix for every shipped preset/connection/shape path.
+
+    The broader audit intentionally mirrors the controller's real boundary
+    construction: non-rectangular OBC masks receive the physical cell vectors
+    used by the renderer.  This catches regressions that a single default
+    nearest-neighbour rectangle cannot expose (for example a missing
+    inter-cell bond in only one connectivity mode).
+    """
+    from hamivisualizer.model.templates import TEMPLATE_NAMES
+
+    combinations = 0
+    for template_name in TEMPLATE_NAMES:
+        for boundary_kind in ("semi", "obc"):
+            shapes = ("rectangle",) if boundary_kind == "semi" else BOUNDARY_SHAPES
+            for shape in shapes:
+                for connectivity in ("仅格点", "最近邻", "最近邻+次近邻"):
+                    document = validate_model_dict(template_document(
+                        template_name, nx=4, ny=4,
+                        boundary_kind=boundary_kind, shape=shape,
+                        connectivity=connectivity,
+                    ))
+                    cell = document["cell"]
+                    site_rows = document["sites"]
+                    sites = [Site(
+                        index, row["x"], row["y"], row.get("sublattice") or None,
+                    ) for index, row in enumerate(site_rows)]
+                    if "a1" in cell:
+                        lattice = Lattice(
+                            sites, a1=tuple(cell["a1"]), a2=tuple(cell["a2"]),
+                        )
+                        vectors = (tuple(cell["a1"]), tuple(cell["a2"]))
+                    else:
+                        lattice = Lattice(
+                            sites, Lx=cell["Lx"], Ly=cell["Ly"],
+                        )
+                        vectors = None
+                    params = document["params"]
+                    hops = []
+                    for row in document["hops"]:
+                        amplitude = evaluate_expression(row["amplitude"], params)
+                        phase = evaluate_expression(row["phase"], params)
+                        hops.append(HoppingTerm(
+                            row["name"], row["from_site"], row["to_site"],
+                            tuple(row["cell_offset"]), amplitude,
+                            row.get("phase_mode", "none"), phase,
+                            row.get("phase_sign", 1),
+                        ))
+                    boundary_data = document["boundary"]
+                    boundary = Boundary(
+                        BoundaryKind.SEMI if boundary_kind == "semi"
+                        else BoundaryKind.OBC,
+                        NX=boundary_data["NX"], NY=boundary_data["NY"],
+                        shape=shape,
+                        shape_aspect=boundary_data.get("shape_aspect", 1.0),
+                        shape_vectors=(vectors if boundary_kind == "obc"
+                                       and shape != "rectangle" else None),
+                    )
+                    result = HamiltonianBuilder(
+                        lattice, hops, boundary, document["order"],
+                    ).build()
+                    assert result.Nat > 0, (template_name, boundary_kind, shape, connectivity)
+                    if boundary_kind == "semi":
+                        matrices = [result.to_semi(kx) for kx in (0.0, 0.371, math.pi)]
+                    else:
+                        matrices = [result.H]
+                    for matrix in matrices:
+                        numeric = np.asarray(matrix, dtype=complex)
+                        assert numeric.shape == (result.Nat, result.Nat)
+                        assert np.isfinite(numeric).all()
+                        assert np.allclose(numeric, numeric.conj().T, atol=1e-8), (
+                            template_name, boundary_kind, shape, connectivity,
+                        )
+                    combinations += 1
+    expected = len(TEMPLATE_NAMES) * (1 + len(BOUNDARY_SHAPES)) * 3
+    assert combinations == expected
+
+
 def test_kagome_nearest_neighbour_template_has_fourfold_coordination():
     """The visible red Kagome editing skeleton must match the physical graph."""
     document = template_document("Kagome", connectivity="最近邻")

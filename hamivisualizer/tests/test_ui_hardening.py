@@ -2941,6 +2941,12 @@ def test_oblique_edit_sites_have_visible_snap_targets_at_their_exact_positions()
     grid = [item for item in scene.items()
             if item.data(0) == "snap-grid-node"]
     assert grid
+    # Every editable site, including one that happens to coincide with a
+    # regular Cartesian dot, gets the same compact alignment ring.  This is
+    # what makes the visible atom center and the advertised snap target
+    # unambiguous instead of relying on the atom to hide the background dot.
+    anchors = [item for item in grid if item.data(1) == "site-anchor"]
+    assert len(anchors) == len(scene._edit_sites)
     centers = [item.sceneBoundingRect().center() for item in grid]
     for site in scene._edit_items.values():
         target = site.scenePos()

@@ -664,7 +664,6 @@ class LatticeView(QGraphicsScene):
         radius = min(0.035, max(0.012, render_step * 0.10))
         x_start = math.ceil((rect.left() - anchor_x) / render_step)
         x_stop = math.floor((rect.right() - anchor_x) / render_step)
-        regular_centers: list[tuple[float, float]] = []
         if self._edit_cell_constrained:
             (a1x, a1y), (a2x, a2y) = self._cell_vectors
             cell_det = a1x * a2y - a1y * a2x
@@ -689,7 +688,6 @@ class LatticeView(QGraphicsScene):
                         if not (-1e-9 <= u < 1.0 - 1e-9
                                 and -1e-9 <= v < 1.0 - 1e-9):
                             continue
-                regular_centers.append((x, y))
                 item = QGraphicsEllipseItem(x - radius, y - radius,
                                             2 * radius, 2 * radius)
                 item.setBrush(QBrush(color))
@@ -716,7 +714,14 @@ class LatticeView(QGraphicsScene):
             halo_pen.setCosmetic(True)
             reference_pen = QPen(halo_color, 0.8, Qt.DashLine)
             reference_pen.setCosmetic(True)
-            halo_radius = max(0.215, self._site_radius * 1.1 + 0.025)
+            # Keep the alignment cue just outside the atom instead of using a
+            # large selection-like halo.  The old minimum radius (0.215) was
+            # enough for an irrational honeycomb basis, but drawing no cue at
+            # all for sites that happened to land on a Cartesian dot made the
+            # regular sites look detached from the visible grid.  Every exact
+            # target now gets the same compact ring; the site itself remains
+            # the only interactive item.
+            halo_radius = max(0.205, min(0.285, self._site_radius + 0.03))
             # Current sites and the immutable geometry captured on entry to
             # edit mode are both legitimate magnetic targets.  The latter is
             # intentionally dashed: after a drag it gives the user a visible
@@ -748,12 +753,6 @@ class LatticeView(QGraphicsScene):
                 if target_key in seen_targets:
                     continue
                 seen_targets.add(target_key)
-                nearest = min(
-                    (math.hypot(tx - gx, ty - gy) for gx, gy in regular_centers),
-                    default=float("inf"),
-                )
-                if nearest <= max(1e-8, render_step * 0.04):
-                    continue
                 halo = QGraphicsEllipseItem(
                     tx - halo_radius, ty - halo_radius,
                     2 * halo_radius, 2 * halo_radius,

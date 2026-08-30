@@ -429,6 +429,11 @@ def test_hopping_dialog_exposes_semantic_intercell_choices_for_semi_mode():
     """Half-infinite users must not infer Bloch offsets from raw spin boxes."""
     QApplication.instance() or QApplication([])
     dialog = HoppingDialog(0, 1, semi=True)
+    connection_labels = [
+        label.text() for label in dialog.findChildren(QLabel)
+        if label.text().startswith("格点 ")
+    ]
+    assert connection_labels == ["格点 1 → 2"]
     assert dialog.cell_relation.count() >= 6
     right = dialog.cell_relation.findData("1,0")
     left = dialog.cell_relation.findData("-1,0")

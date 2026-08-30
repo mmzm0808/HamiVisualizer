@@ -328,7 +328,14 @@ class HoppingDialog(QDialog):
             form.addRow("起点", self.from_combo)
             form.addRow("终点", self.to_combo)
         else:
-            form.addRow("连接", QLabel(f"格点 {from_site} → {to_site}"))
+            # Canvas callbacks use compact zero-based indices internally, but
+            # every user-facing lattice label starts at one.  Keep the model
+            # indices unchanged in ``row()`` while presenting the same
+            # numbering convention in this confirmation line.
+            form.addRow(
+                "连接",
+                QLabel(f"格点 {int(from_site) + 1} → {int(to_site) + 1}"),
+            )
         self.name = QLineEdit("t")
         self.amplitude = QLineEdit("-t")
         self.phase = QLineEdit("0")

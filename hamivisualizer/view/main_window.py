@@ -357,11 +357,18 @@ class MainWindow(QMainWindow):
     def _theme(self):
         return DARK if self._dark else LIGHT
 
+    def _set_export_actions_enabled(self, enabled: bool) -> None:
+        """Keep raster and vector export commands in the same result state."""
+        for name in ("action_export", "action_export_svg", "action_export_pdf"):
+            action = getattr(self, name, None)
+            if action is not None:
+                action.setEnabled(bool(enabled))
+
     def set_result_state(self, state: str, message: str = "", *, show_banner: bool = True):
         if state == "ready":
             self.result_banner.setVisible(False)
             self.result_banner.setText("")
-            self.action_export.setEnabled(True)
+            self._set_export_actions_enabled(True)
             return
         theme = self._theme()
         if state == "busy":
@@ -370,14 +377,14 @@ class MainWindow(QMainWindow):
                 f"border:1px solid {theme.banner_info_border};border-radius:6px;"
             )
             self.result_banner.setText(message or "正在计算…")
-            self.action_export.setEnabled(False)
+            self._set_export_actions_enabled(False)
         else:
             self.result_banner.setStyleSheet(
                 f"background:{theme.banner_err_bg};color:{theme.banner_err_text};"
                 f"border:1px solid {theme.banner_err_border};border-radius:6px;"
             )
             self.result_banner.setText(message or "当前视图已过期，请修正输入。")
-            self.action_export.setEnabled(False)
+            self._set_export_actions_enabled(False)
         self.result_banner.setVisible(bool(show_banner))
 
     def flash_status(self, message: str, duration_ms: int = 1800):
@@ -749,6 +756,9 @@ class MainWindow(QMainWindow):
     def _build_menu(self):
         mb = self.menuBar()
         fm = mb.addMenu("文件")
+        # Keep a stable reference for integrations and UI evidence harnesses;
+        # the menu itself remains owned by QMenuBar.
+        self.file_menu = fm
         self.action_new = fm.addAction("新建模型…")
         self.action_new.setShortcut(QKeySequence.New)
         self.action_np = fm.addAction("新建 NP 模型")
@@ -772,6 +782,14 @@ class MainWindow(QMainWindow):
         self.action_save_as.setShortcut(QKeySequence.SaveAs)
         self.action_export = fm.addAction("导出当前视图 PNG…")
         self.action_export.setShortcut("Ctrl+E")
+        self.action_export_svg = fm.addAction("导出当前视图 SVG…")
+        self.action_export_svg.setToolTip(
+            "导出当前标签页的矢量图，适合论文排版和后续编辑。"
+        )
+        self.action_export_pdf = fm.addAction("导出当前视图 PDF…")
+        self.action_export_pdf.setToolTip(
+            "导出当前标签页的矢量 PDF，保留文字和线条的清晰度。"
+        )
         fm.addSeparator()
         quit_action = fm.addAction("退出", self.close)
         quit_action.setShortcut(QKeySequence.Quit)
@@ -908,6 +926,8 @@ class MainWindow(QMainWindow):
         self.action_save.triggered.connect(lambda: self._save_active(False))
         self.action_save_as.triggered.connect(lambda: self._save_active(True))
         self.action_export.triggered.connect(controller.export_png)
+        self.action_export_svg.triggered.connect(controller.export_svg)
+        self.action_export_pdf.triggered.connect(controller.export_pdf)
         self.action_undo.triggered.connect(self.undo)
         self.action_redo.triggered.connect(self.redo)
         self.action_duplicate.triggered.connect(self.duplicate_current)

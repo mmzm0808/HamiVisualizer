@@ -97,6 +97,23 @@ def test_edit_toolbar_exposes_and_persists_snap_step(tmp_path):
     assert win.lattice_snap_step_spin.value() == pytest.approx(0.125)
 
 
+def test_workspace_connects_vector_export_actions(tmp_path, monkeypatch):
+    """The production workspace wiring must expose both vector exporters."""
+    _app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    ctrl = ViewController(win, connect_actions=False)
+    ctrl.load_preset("NP")
+    win._workspace_root = tmp_path
+    called = []
+    monkeypatch.setattr(ctrl, "export_svg", lambda: called.append("svg"))
+    monkeypatch.setattr(ctrl, "export_pdf", lambda: called.append("pdf"))
+    win.enable_workspace_mode(ctrl)
+
+    win.action_export_svg.trigger()
+    win.action_export_pdf.trigger()
+    assert called == ["svg", "pdf"]
+
+
 def test_dimension_resource_hint_is_live_and_does_not_restrict_editing():
     """尺寸提示预警应即时更新，但大模型仍可编辑/保存。"""
     _app, win, ctrl = _window()
@@ -138,6 +155,8 @@ def test_fractional_index_is_an_error_and_marks_results_stale():
     assert win.matrix_scene._data is old
     assert not win.result_banner.isHidden()
     assert not win.action_export.isEnabled()
+    assert not win.action_export_svg.isEnabled()
+    assert not win.action_export_pdf.isEnabled()
 
 
 def test_input_waiting_message_stays_in_status_bar():

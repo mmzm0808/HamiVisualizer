@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import (
     QApplication, QGraphicsEllipseItem, QGraphicsLineItem, QGraphicsItem,
-    QGraphicsPolygonItem,
+    QGraphicsPolygonItem, QFileDialog,
 )
 
 from hamivisualizer.controller import ViewController
@@ -48,6 +48,36 @@ def test_load_np_semi():
     # 预设以符号表达式入表 (数值模式解析, 符号模式重建)
     assert any(win.panel.hop_table.item(r, 5).text() == "-t"
                for r in range(win.panel.hop_table.rowCount()))
+
+
+def test_vector_export_writes_svg_and_pdf(tmp_path, monkeypatch):
+    """The current tab can be exported as real vector SVG and PDF files."""
+    _app, win, ctrl = _mk()
+    ctrl.apply_document(template_document("NP", nx=2, ny=2, boundary_kind="semi"))
+    win.resize(1000, 700)
+    win.show()
+    QApplication.processEvents()
+
+    svg_base = tmp_path / "current-view"
+    pdf_base = tmp_path / "current-view-pdf"
+    targets = iter((str(svg_base), str(pdf_base)))
+    monkeypatch.setattr(
+        QFileDialog,
+        "getSaveFileName",
+        lambda *args, **kwargs: (next(targets), ""),
+    )
+
+    ctrl.export_svg()
+    ctrl.export_pdf()
+
+    svg_path = tmp_path / "current-view.svg"
+    pdf_path = tmp_path / "current-view-pdf.pdf"
+    assert svg_path.read_text(encoding="utf-8").lstrip().startswith("<?xml")
+    assert svg_path.stat().st_size > 100
+    assert pdf_path.read_bytes().startswith(b"%PDF")
+    assert pdf_path.stat().st_size > 100
+    assert "PDF" in win.statusBar().currentMessage()
+    win.close()
 
 
 def test_load_sc_obc():

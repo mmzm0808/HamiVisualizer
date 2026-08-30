@@ -18,8 +18,21 @@ import math
 
 import numpy as np
 import sympy as sp
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, QTimer, Signal, Slot
-from PySide6.QtWidgets import QAbstractItemView, QDialog, QFileDialog, QMessageBox
+from PySide6.QtCore import (
+    QMarginsF,
+    QObject,
+    QPoint,
+    QRect,
+    QRunnable,
+    QSizeF,
+    QThreadPool,
+    Qt,
+    QTimer,
+    Signal,
+    Slot,
+)
+from PySide6.QtGui import QPageLayout, QPageSize, QPainter, QPdfWriter, QRegion
+from PySide6.QtWidgets import QAbstractItemView, QDialog, QFileDialog, QMessageBox, QWidget
 
 from .model.boundary import Boundary, BoundaryKind
 from .model.expression import evaluate_expression, parse_expression
@@ -304,6 +317,8 @@ class ViewController(QObject):
             self.window.action_open.triggered.connect(self.open_model)
             self.window.action_save.triggered.connect(self.save_model)
             self.window.action_export.triggered.connect(self.export_png)
+            self.window.action_export_svg.triggered.connect(self.export_svg)
+            self.window.action_export_pdf.triggered.connect(self.export_pdf)
         # Matrix inspection is owned by MainWindow: it is intentionally
         # non-modal and highlights the selected cell in both matrix views.
         # Keeping a second controller-side QMessageBox connection here made
@@ -1287,6 +1302,90 @@ class ViewController(QObject):
             QMessageBox.critical(self.window, "导出失败", str(exc))
             return
         self.window.statusBar().showMessage(f"已导出: {path}" if ok else "导出失败")
+
+    def export_svg(self):
+        """Export the current result tab as a true SVG drawing.
+
+        Rendering the visible QWidget (rather than only the scene) preserves
+        the frozen matrix rulers, tab-specific overlays and the two-pane
+        comparison layout.  ``QSvgGenerator`` receives the same QPainter
+        commands as the screen, so text and geometry remain editable/vector
+        instead of becoming a screenshot embedded in an SVG.
+        """
+        path, _ = QFileDialog.getSaveFileName(
+            self.window, "导出 SVG", "hamivisualizer.svg", "SVG (*.svg)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".svg"):
+            path += ".svg"
+        try:
+            from PySide6.QtSvg import QSvgGenerator
+
+            widget = self.window.tabs.currentWidget()
+            size = widget.size()
+            if size.width() <= 1 or size.height() <= 1:
+                raise ValueError("当前视图尚未完成布局，无法导出")
+            generator = QSvgGenerator()
+            generator.setFileName(path)
+            generator.setSize(size)
+            generator.setViewBox(QRect(0, 0, size.width(), size.height()))
+            generator.setResolution(96)
+            generator.setTitle("HamiVisualizer")
+            generator.setDescription("HamiVisualizer 当前视图")
+            painter = QPainter(generator)
+            try:
+                widget.render(
+                    painter, QPoint(), QRegion(),
+                    QWidget.DrawWindowBackground | QWidget.DrawChildren,
+                )
+            finally:
+                painter.end()
+        except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
+            QMessageBox.critical(self.window, "导出失败", str(exc))
+            return
+        self.window.statusBar().showMessage(f"已导出 SVG：{path}")
+
+    def export_pdf(self):
+        """Export the current result tab as a single-page vector PDF."""
+        path, _ = QFileDialog.getSaveFileName(
+            self.window, "导出 PDF", "hamivisualizer.pdf", "PDF (*.pdf)",
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        try:
+            widget = self.window.tabs.currentWidget()
+            size = widget.size()
+            if size.width() <= 1 or size.height() <= 1:
+                raise ValueError("当前视图尚未完成布局，无法导出")
+            # Use a 96-DPI pixel-to-point conversion so the PDF has the same
+            # physical aspect as the visible view instead of silently using
+            # the printer's default A4 crop.
+            points = QSizeF(size.width() * 72.0 / 96.0,
+                            size.height() * 72.0 / 96.0)
+            writer = QPdfWriter(path)
+            writer.setResolution(96)
+            writer.setPageLayout(QPageLayout(
+                QPageSize(points, QPageSize.Point),
+                QPageLayout.Landscape if points.width() >= points.height()
+                else QPageLayout.Portrait,
+                QMarginsF(0, 0, 0, 0),
+            ))
+            writer.setTitle("HamiVisualizer")
+            painter = QPainter(writer)
+            try:
+                widget.render(
+                    painter, QPoint(), QRegion(),
+                    QWidget.DrawWindowBackground | QWidget.DrawChildren,
+                )
+            finally:
+                painter.end()
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            QMessageBox.critical(self.window, "导出失败", str(exc))
+            return
+        self.window.statusBar().showMessage(f"已导出 PDF：{path}")
 
     # ---- 视口 ----
 

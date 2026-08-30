@@ -696,12 +696,6 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("已恢复编辑前的格点位置和元胞矢量")
 
-    def showEvent(self, event):
-        super().showEvent(event)
-        c = getattr(self, "controller", None)
-        if c is not None:
-            c.fit_all(force=False)
-
     def _build_menu(self):
         mb = self.menuBar()
         fm = mb.addMenu("文件")
@@ -1641,6 +1635,11 @@ class MainWindow(QMainWindow):
         changes tabs or models.
         """
         super().showEvent(event)
+        c = getattr(self, "controller", None)
+        if c is not None:
+            # Keep the first visible frame fitted even when the window was
+            # restored before its graphics views had a non-zero viewport.
+            c.fit_all(force=False)
         if self._workspace_enabled and self.action_split.isChecked():
             QTimer.singleShot(0, self._refresh_comparison)
 

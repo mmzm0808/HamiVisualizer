@@ -1287,6 +1287,11 @@ class MainWindow(QMainWindow):
     def _clear_recent_models(self) -> None:
         self._recent_model_paths.clear()
         self._save_workspace_state()
+        # The action is triggered from the open menu itself.  Rebuild it now
+        # instead of waiting for the next ``aboutToShow`` signal; otherwise
+        # the just-cleared entries remain visible until the user closes and
+        # reopens the menu, which makes the command feel ineffective.
+        self._refresh_recent_models_menu()
         self.statusBar().showMessage("已清空最近模型记录")
 
     def _open_recent_model(self, path: str | Path) -> None:

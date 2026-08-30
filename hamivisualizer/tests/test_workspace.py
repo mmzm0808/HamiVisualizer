@@ -142,6 +142,25 @@ def test_recent_models_are_deduplicated_and_persisted(tmp_path):
     assert [Path(p).name for p in load_workspace(tmp_path).recent_models] == ["first.hvisual", "second.hvisual"]
 
 
+def test_clearing_recent_models_refreshes_open_menu_immediately(tmp_path):
+    app, window, controller = _workspace(tmp_path)
+    model_path = tmp_path / "recent.hvisual"
+    save_model(model_path, controller.current_document())
+    window._remember_recent_model(model_path)
+    window._refresh_recent_models_menu()
+    assert window.recent_models_menu.actions()[0].text() == "recent.hvisual"
+
+    # This is the same slot invoked by the menu's "清空最近模型记录" action.
+    # The placeholder must replace the stale entry without requiring another
+    # menu-open cycle.
+    window._clear_recent_models()
+    app.processEvents()
+    actions = window.recent_models_menu.actions()
+    assert [action.text() for action in actions] == ["暂无最近模型"]
+    assert actions[0].isEnabled() is False
+    assert window._recent_model_paths == []
+
+
 def test_open_recent_model_adds_one_tab_and_reuses_it(tmp_path):
     app, window, controller = _workspace(tmp_path)
     model_path = tmp_path / "opened.hvisual"

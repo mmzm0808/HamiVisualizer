@@ -1058,9 +1058,23 @@ class MainWindow(QMainWindow):
     def _move_model(self, from_index: int, to_index: int):
         if not (0 <= from_index < len(self._sessions) and 0 <= to_index < len(self._sessions)):
             return
+        # ``QTabBar`` moves the visual tab before emitting ``tabMoved``.  The
+        # active document is identified by its session object, not by the
+        # transient tab index: moving a background tab must not silently make
+        # it the active calculation, and moving the active tab must preserve
+        # its identity after the index changes.
+        active_session = (
+            self._sessions[self._active_index]
+            if 0 <= self._active_index < len(self._sessions)
+            else None
+        )
         session = self._sessions.pop(from_index)
         self._sessions.insert(to_index, session)
-        self._active_index = to_index
+        if active_session is not None:
+            self._active_index = self._sessions.index(active_session)
+        else:
+            self._active_index = max(0, self.model_bar.currentIndex())
+        self._refresh_comparison_models()
         self._save_workspace_state()
 
     def _unique_name(self, base: str, exclude: int = -1) -> str:

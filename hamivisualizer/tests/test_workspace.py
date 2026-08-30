@@ -205,6 +205,23 @@ def test_model_tabs_keep_independent_documents(tmp_path):
     assert window.panel.site_table.rowCount() == 4
 
 
+def test_reordering_model_tabs_preserves_active_session_identity(tmp_path):
+    """Moving a tab must reorder presentation without switching the model."""
+    app, window, _controller = _workspace(tmp_path)
+    window._add_template("SC")
+    app.processEvents()
+    assert window._sessions[window._active_index].meta.name == "SC"
+
+    # This is the same signal path used by a drag on QTabBar.
+    window.model_bar.moveTab(1, 0)
+    app.processEvents()
+
+    assert [session.meta.name for session in window._sessions] == ["SC", "NP"]
+    assert [window.model_bar.tabText(i) for i in range(2)] == ["SC", "NP"]
+    assert window._active_index == 0
+    assert window._sessions[window._active_index].meta.name == "SC"
+
+
 def test_kagome_triangle_menu_action_creates_explicit_flat_edge_nanodisk(tmp_path):
     """The File menu exposes the actual Kagome triangle, not a rectangle alias."""
     app, window, _controller = _workspace(tmp_path)

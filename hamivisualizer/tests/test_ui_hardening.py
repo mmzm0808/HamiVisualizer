@@ -5,7 +5,10 @@ from __future__ import annotations
 import os
 import math
 import argparse
+import subprocess
+import sys
 from copy import deepcopy
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -67,6 +70,20 @@ def test_evidence_renderer_rejects_non_100_percent_output_scale():
     assert EVIDENCE_SCREENSHOT_SCALE == 1.0
     assert _evidence_path("np", "dark", 1.0).name == "np-dark-100.png"
     assert _evidence_path("np", "dark", 1.5) is None
+
+
+def test_evidence_renderer_help_is_renderable():
+    """证据脚本的帮助页不能因字面百分号触发 argparse 格式化错误。"""
+    repo = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, str(repo / "tools" / "render_ui_regression.py"), "--help"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "1.0（100%）" in result.stdout
 
 
 def _window():

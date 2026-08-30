@@ -84,7 +84,9 @@ def main() -> int:
     parser.add_argument("--view-zoom", type=float, default=1.0)
     parser.add_argument(
         "--ui-scale", type=_parse_screenshot_ui_scale,
-        help="证据截图界面缩放；固定为 1.0（100%），同时输出亮/暗主题。",
+        # argparse interpolates ``%(...)s`` placeholders in help strings;
+        # escape the literal percent so ``--help`` itself remains usable.
+        help="证据截图界面缩放；固定为 1.0（100%%），同时输出亮/暗主题。",
     )
     parser.add_argument(
         "--window-width", type=int, default=1440,

@@ -152,7 +152,12 @@ class _EditableSiteItem(QGraphicsEllipseItem):
                 QApplication.keyboardModifiers() & Qt.AltModifier
             ):
                 p = self.editor_scene.snap_position(self.site_index, p, self._press_pos)
-            return self.editor_scene.constrain_edit_position(p)
+            # Snapping is optional, but model validity is not.  Route both
+            # magnetic and free-drag paths through the same collision guard so
+            # Alt/disabled-snap drags cannot stack two sites at one coordinate.
+            return self.editor_scene.safe_edit_position(
+                self.site_index, p, fallback=self._press_pos,
+            )
         return super().itemChange(change, value)
 
     def paint(self, painter, option, widget=None):
@@ -240,7 +245,9 @@ class _EditableSiteItem(QGraphicsEllipseItem):
             # Alt temporarily disables magnetic snapping, not the model's
             # validity rules.  Clamp the final coordinates before handing
             # them to the panel so a fast drag cannot create an invalid cell.
-            constrained = self.editor_scene.constrain_edit_position(self.pos())
+            constrained = self.editor_scene.safe_edit_position(
+                self.site_index, self.pos(), fallback=self._press_pos,
+            )
             if constrained != self.pos():
                 self.setPos(constrained)
             self.editor_scene.siteMoved.emit(
@@ -752,6 +759,107 @@ class LatticeView(QGraphicsScene):
             -(anchor_y + cu * a1y + cv * a2y),
         )
 
+    def _edit_collision_tolerance(self) -> float:
+        """Return the minimum visual clearance between editable sites."""
+        # This is intentionally smaller than a typical site diameter: nearby
+        # legitimate Kagome/oblique sites remain reachable, while a dragged
+        # circle can never be written on top of another circle.  The value is
+        # independent of view zoom because coordinates live in scene units.
+        return max(0.03, min(0.12, max(0.03, self.snap_step * 0.8)))
+
+    def _edit_live_positions(self, skip_index: int | None = None):
+        anchor_x, anchor_y = self._edit_anchor_offset
+        for owner, (x, y, _sub) in enumerate(self._edit_sites):
+            if skip_index is not None and owner == int(skip_index):
+                continue
+            yield owner, QPointF(
+                float(x) + anchor_x,
+                -float(y) - anchor_y,
+            )
+
+    def _edit_position_is_clear(self, index: int, point: QPointF,
+                                tolerance: float | None = None) -> bool:
+        """Check a scene-space candidate against every other live site."""
+        if not 0 <= int(index) < len(self._edit_sites):
+            return True
+        radius = self._edit_collision_tolerance() if tolerance is None else float(tolerance)
+        return all(
+            math.hypot(point.x() - live.x(), point.y() - live.y()) > radius
+            for _owner, live in self._edit_live_positions(int(index))
+        )
+
+    def safe_edit_position(self, index: int, point: QPointF,
+                           *, fallback: QPointF | None = None) -> QPointF:
+        """Constrain a drag and guarantee it does not overlap another site.
+
+        The old implementation protected only magnetic snap candidates.  A
+        free drag (Alt or a disabled snap toggle) could therefore emit a
+        duplicate coordinate and leave the controller with an invalid model.
+        This final gate is deliberately view-local and deterministic: it first
+        nudges away from the nearest occupied site, then tries a small radial
+        set of alternatives, and finally returns the previous valid position.
+        """
+        index = int(index)
+        candidate = self.constrain_edit_position(QPointF(point))
+        if self._edit_position_is_clear(index, candidate):
+            return candidate
+        clearance = self._edit_collision_tolerance() + 0.02
+        fallback_point = None
+        if fallback is not None:
+            fallback_point = self.constrain_edit_position(QPointF(fallback))
+
+        def clear(value: QPointF) -> bool:
+            return self._edit_position_is_clear(index, value)
+
+        # Push out from each colliding site.  Iterating makes the result stable
+        # even when a dense model has two neighbours around the pointer.
+        adjusted = QPointF(candidate)
+        for _ in range(max(2, len(self._edit_sites) + 1)):
+            changed = False
+            for _owner, live in self._edit_live_positions(index):
+                dx = adjusted.x() - live.x()
+                dy = adjusted.y() - live.y()
+                distance = math.hypot(dx, dy)
+                if distance > self._edit_collision_tolerance():
+                    continue
+                if distance <= 1e-12:
+                    if fallback_point is not None:
+                        dx = fallback_point.x() - live.x()
+                        dy = fallback_point.y() - live.y()
+                        distance = math.hypot(dx, dy)
+                    if distance <= 1e-12:
+                        # Deterministic direction for a pathological already
+                        # duplicated input; valid models normally use fallback.
+                        angle = (index + 1) * 1.61803398875
+                        dx, dy, distance = math.cos(angle), math.sin(angle), 1.0
+                adjusted = self.constrain_edit_position(QPointF(
+                    live.x() + dx / distance * clearance,
+                    live.y() + dy / distance * clearance,
+                ))
+                changed = True
+            if not changed or clear(adjusted):
+                break
+        if clear(adjusted):
+            return adjusted
+
+        # A radial fallback preserves as much of the user's pointer intent as
+        # possible when the first nudge is clipped by an oblique cell edge.
+        for radius in (clearance, clearance * 1.8, clearance * 2.6):
+            for step in range(16):
+                angle = 2.0 * math.pi * step / 16.0
+                probe = self.constrain_edit_position(QPointF(
+                    candidate.x() + radius * math.cos(angle),
+                    candidate.y() + radius * math.sin(angle),
+                ))
+                if clear(probe):
+                    return probe
+        # The drag origin is a valid, non-overlapping position for a valid
+        # model, so it is the safest final fallback instead of emitting a
+        # duplicate that would invalidate the next rebuild.
+        if fallback_point is not None and clear(fallback_point):
+            return fallback_point
+        return adjusted
+
     def snap_position(self, index: int, point: QPointF,
                       drag_origin: QPointF | None = None) -> QPointF:
         """Grid snap plus magnetic restoration/alignment candidates.
@@ -761,8 +869,13 @@ class LatticeView(QGraphicsScene):
         while retaining the configurable grid as a fallback.  Alt still means
         completely free movement.
         """
+        interactive_drag = drag_origin is not None
         if not self.snap_enabled:
-            return QPointF(point)
+            result = QPointF(point)
+            return (
+                self.safe_edit_position(index, result, fallback=drag_origin)
+                if interactive_drag else result
+            )
         step = self.snap_step
         # Snap in the primitive cell's local coordinates.  A central anchor
         # for a slanted disk/hexagon cell is generally not a multiple of the
@@ -785,7 +898,6 @@ class LatticeView(QGraphicsScene):
         # origin) still get the old complete-geometry candidate behaviour;
         # this keeps the helper useful for previews and preserves its 2-D
         # snapping semantics outside the interactive editor.
-        interactive_drag = drag_origin is not None
         live_positions = [
             (QPointF(float(x) + anchor_x, -float(y) - anchor_y), site_index)
             for site_index, (x, y, _s) in enumerate(self._edit_sites)
@@ -825,7 +937,7 @@ class LatticeView(QGraphicsScene):
         if nearest is not None and math.hypot(
             nearest.x() - point.x(), nearest.y() - point.y()
         ) <= tolerance:
-            return nearest
+            return self.safe_edit_position(index, nearest, fallback=drag_origin)
         if interactive_drag:
             # Keep the pointer responsive while enforcing a small visual
             # clearance.  Returning the raw point on an exact neighbour hit
@@ -865,7 +977,12 @@ class LatticeView(QGraphicsScene):
                 <= collision_tolerance
                 for live, owner in live_positions
             ):
-                return nudge_from_collisions(QPointF(point))
+                return self.safe_edit_position(
+                    index, nudge_from_collisions(QPointF(point)),
+                    fallback=drag_origin,
+                )
+        if interactive_drag:
+            return self.safe_edit_position(index, grid, fallback=drag_origin)
         return grid
 
     def set_edit_mode(self, enabled: bool):

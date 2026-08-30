@@ -1824,13 +1824,35 @@ class ControlPanel(QWidget):
         if not 0 <= int(index) < len(table_rows):
             self.set_error("所选格点行为空或已失效，请重新选择格点")
             return
+        # Keep the panel as a second, model-facing validity gate.  The canvas
+        # normally prevents this case, but signals can also come from plug-ins
+        # or synthetic input events; never write a duplicate into the table.
+        try:
+            candidate_x, candidate_y = float(x), float(y)
+        except (TypeError, ValueError):
+            self.set_error("格点坐标必须是有限数值")
+            return
+        if not (math.isfinite(candidate_x) and math.isfinite(candidate_y)):
+            self.set_error("格点坐标必须是有限数值")
+            return
+        for other_index, other_row in enumerate(table_rows):
+            if other_index == int(index):
+                continue
+            try:
+                other_x = float(self._cell(self.site_table, other_row, 0))
+                other_y = float(self._cell(self.site_table, other_row, 1))
+            except (TypeError, ValueError):
+                continue
+            if math.hypot(candidate_x - other_x, candidate_y - other_y) <= 1e-9:
+                self.set_error("格点坐标不能重复；已保留拖动前位置")
+                return
         table_row = table_rows[int(index)]
         self.site_table.blockSignals(True)
         self.site_table.setItem(
-            table_row, 0, self._table_item(float(x))
+            table_row, 0, self._table_item(candidate_x)
         )
         self.site_table.setItem(
-            table_row, 1, self._table_item(float(y))
+            table_row, 1, self._table_item(candidate_y)
         )
         self.site_table.blockSignals(False)
         self._emit_changed()

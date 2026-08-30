@@ -1082,6 +1082,23 @@ def test_edit_snap_does_not_stack_sites_during_a_real_drag():
     assert math.hypot(exact.x(), exact.y()) > 0.12
 
 
+def test_free_drag_collision_guard_applies_when_snap_is_disabled():
+    """Alt/free dragging must retain a valid, non-overlapping geometry."""
+    QApplication.instance() or QApplication([])
+    scene = LatticeView()
+    scene.set_edit_context(
+        [(0.0, 0.0, "A"), (1.0, 0.0, "B")], snap_step=0.25,
+    )
+    scene.set_snap_enabled(False)
+    origin = QPointF(1.0, 0.0)
+    safe = scene.snap_position(1, QPointF(0.0, 0.0), origin)
+    assert math.hypot(safe.x(), safe.y()) > 0.03
+    assert math.hypot(safe.x() - 1.0, safe.y()) > 0.03
+    # The direct final gate is also safe for a simulated item-change path.
+    safe_direct = scene.safe_edit_position(1, QPointF(0.0, 0.0), fallback=origin)
+    assert math.hypot(safe_direct.x(), safe_direct.y()) > 0.03
+
+
 def test_oblique_cell_length_edit_preserves_direction():
     _app, win, ctrl = _window()
     ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
@@ -1260,6 +1277,19 @@ def test_site_position_edit_uses_table_row_after_blank_row():
     rows = panel.get_site_rows()
     assert rows[0][:2] == pytest.approx((0.25, 0.75))
     assert rows[1][0] == pytest.approx(original[1][0])
+
+
+def test_site_position_edit_rejects_duplicate_coordinates_at_panel_boundary():
+    """Synthetic/plugin position signals must not create duplicate sites."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    panel = win.panel
+    before = panel.get_site_rows()
+    panel.update_site_position(1, before[0][0], before[0][1])
+
+    assert "不能重复" in panel.error_label.text()
+    after = panel.get_site_rows()
+    assert after[1][:2] == pytest.approx(before[1][:2])
 
 
 def test_site_delete_uses_table_row_after_blank_row():

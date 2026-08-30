@@ -164,7 +164,7 @@ python -m pip install "numpy>=1.26,<2"
 
 ![NP 模型：浅色 100% 主界面](docs/assets/screenshots/01-main-light-100.png)
 
-![NP 模型：深色 180% 主界面](docs/assets/screenshots/02-main-dark-180.png)
+![NP 模型：深色 100% 主界面](docs/assets/screenshots/02-main-dark-100.png)
 
 界面缩放在“编辑 → 偏好设置”中设置为 80%–180%，只改变菜单、标签、侧栏和控件，不改变
 矩阵/晶格的物理视图缩放。修改后布局会重新计算，避免文字超出控件。
@@ -185,11 +185,11 @@ python -m pip install "numpy>=1.26,<2"
 
 ![NP 编辑态：浅色 100%](docs/assets/screenshots/03-editor-np-light-100.png)
 
-![蜂窝编辑态：深色 150%](docs/assets/screenshots/04-editor-honeycomb-dark-150.png)
+![蜂窝编辑态：深色 100%](docs/assets/screenshots/04-editor-honeycomb-dark-100.png)
 
 Kagome 三角盘使用 3 格点斜原胞；有限盘边界是三条平直等边，而不是索引网格的直角裁切。
 
-![Kagome 三角纳米盘：深色 180%](docs/assets/screenshots/05-kagome-triangle-dark-180.png)
+![Kagome 三角纳米盘：深色 100%](docs/assets/screenshots/05-kagome-triangle-dark-100.png)
 
 ### 4. 添加胞内和胞间跃迁
 
@@ -202,7 +202,7 @@ Kagome 三角盘使用 3 格点斜原胞；有限盘边界是三条平直等边�
 
 输入框集中在右侧，只有悬停/聚焦项显示对应引线；表格仍然保留为检查和批量精确输入的兜底。
 
-![跃迁编辑导轨：深色 180%](docs/assets/screenshots/10-hop-editor-dark-180.png)
+![跃迁编辑导轨：深色 100%](docs/assets/screenshots/10-hop-editor-dark-100.png)
 
 ![胞内/胞间关系预览](docs/assets/screenshots/11-hop-relation-dark-100.png)
 

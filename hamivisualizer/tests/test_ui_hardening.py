@@ -2867,6 +2867,30 @@ def test_edit_canvas_draws_snap_grid_nodes_and_toolbar_spacing_updates_them():
     assert any(item.data(0) == "snap-grid-node" for item in scene.items())
 
 
+def test_snap_grid_stays_in_the_editable_cell_work_area_not_the_coefficient_rail():
+    """网格点只覆盖当前原始元胞周围，避免淹没周期虚影和引线。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "蜂窝", boundary_kind="semi", connectivity="最近邻", nx=4, ny=4,
+    ))
+    win.resize(1440, 920)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    scene = win.lattice_scene
+    bounds = scene._snap_grid_bounds()
+    grid = [item for item in scene.items()
+            if item.data(0) == "snap-grid-node"]
+    assert grid
+    assert all(bounds.contains(item.sceneBoundingRect().center()) for item in grid)
+    # The scene includes periodic ghost columns and a right-hand editor rail;
+    # the compact work area must be strictly smaller than that full canvas.
+    assert bounds.width() < scene.sceneRect().width()
+    assert bounds.height() < scene.sceneRect().height()
+
+
 def test_site_creation_respects_snap_toggle_and_rejects_invalid_or_duplicate_points():
     """添加格点不应绕过吸附开关、元胞边界或重复坐标校验。"""
     QApplication.instance() or QApplication([])

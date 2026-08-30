@@ -578,18 +578,64 @@ class LatticeView(QGraphicsScene):
             self.removeItem(item)
         self._grid_items.clear()
 
+    def _snap_grid_bounds(self) -> QRectF:
+        """Return the compact visual work area for snap targets.
+
+        Only the primitive-cell copy represented by the editable handles can
+        be changed.  Drawing dots over the entire periodic canvas (including
+        the coefficient rail and read-only ghost copies) makes a dense model
+        look like an unrelated second lattice.  Keep a small scene margin
+        around the actual Bravais parallelogram; unconstrained stand-alone
+        scenes retain the historical full-scene fallback for plug-ins.
+        """
+        scene_rect = QRectF(self.sceneRect())
+        if not self._edit_cell_constrained or scene_rect.isEmpty():
+            return scene_rect
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
+        anchor_x, anchor_y = self._edit_anchor_offset
+        corners = [
+            QPointF(anchor_x, -anchor_y),
+            QPointF(anchor_x + a1x, -(anchor_y + a1y)),
+            QPointF(anchor_x + a2x, -(anchor_y + a2y)),
+            QPointF(anchor_x + a1x + a2x, -(anchor_y + a1y + a2y)),
+        ]
+        left = min(point.x() for point in corners)
+        right = max(point.x() for point in corners)
+        top = min(point.y() for point in corners)
+        bottom = max(point.y() for point in corners)
+        # The margin keeps a row of targets visible near each cell edge while
+        # remaining small enough that the read-only neighbouring copies stay
+        # visually quiet.  It scales with the chosen density but is bounded
+        # for very fine/coarse user-entered spacing.
+        padding = max(0.35, min(1.5, 2.0 * max(0.001, self.snap_step)))
+        focus = QRectF(
+            left - padding, top - padding,
+            max(0.0, right - left) + 2.0 * padding,
+            max(0.0, bottom - top) + 2.0 * padding,
+        )
+        # ``QRectF.contains`` treats its right/bottom edge as closed in
+        # principle, but values produced by the Bravais-vector arithmetic can
+        # land a few ulps below that edge (for example ``-0.9999999999999999``
+        # versus ``-1.0``).  Keep a tiny numerical cushion so the visual dot
+        # and the advertised work area agree at the boundary without making
+        # the grid meaningfully larger.
+        bounded = focus.intersected(scene_rect)
+        epsilon = 1.0e-9
+        return bounded.adjusted(-epsilon, -epsilon, epsilon, epsilon)
+
     def _draw_snap_grid(self) -> None:
         """Draw quiet, clickable-looking snap targets behind the lattice.
 
         The points share the same Cartesian origin and interval used by
         :meth:`snap_position`, so a user can see exactly where a dragged site
-        will land.  Very large scenes coarsen *only the decoration* to keep
-        Qt responsive; the actual snap interval remains unchanged.
+        will land.  They are limited to the compact editable-cell work area;
+        very large scenes coarsen *only the decoration* to keep Qt responsive,
+        and the actual snap interval remains unchanged.
         """
         self._clear_snap_grid()
         if not self.edit_mode or not self._grid_visible or self._data is None:
             return
-        rect = self.sceneRect()
+        rect = self._snap_grid_bounds()
         if not rect.isValid() or rect.isEmpty():
             return
         step = max(0.001, float(self.snap_step))

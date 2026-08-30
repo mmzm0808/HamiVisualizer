@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import math
+import argparse
 from copy import deepcopy
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -44,6 +45,20 @@ from hamivisualizer.view.rendermodel import LatticeSceneData, MatrixSceneData, W
 from hamivisualizer.view.zoom_view import ZoomGraphicsView
 from hamivisualizer.view.wavefunction_view import WavefunctionView
 from hamivisualizer.model.symbolic import ElementFormatter
+
+
+def test_evidence_renderer_rejects_non_100_percent_output_scale():
+    """离屏证据入口必须阻止混入150%/180%截图。"""
+    from tools.render_ui_regression import (
+        SCREENSHOT_UI_SCALE, _parse_screenshot_ui_scale,
+    )
+
+    assert SCREENSHOT_UI_SCALE == 1.0
+    assert _parse_screenshot_ui_scale("1.0") == 1.0
+    with pytest.raises(argparse.ArgumentTypeError, match="100%"):
+        _parse_screenshot_ui_scale("1.5")
+    with pytest.raises(argparse.ArgumentTypeError, match="100%"):
+        _parse_screenshot_ui_scale("1.8")
 
 
 def _window():

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+import math
 import os
 from pathlib import Path
 import sys
@@ -35,6 +36,29 @@ from hamivisualizer.model.workspace import DocumentHistory, ModelSessionData
 from hamivisualizer.view.dialogs import HoppingDialog
 
 
+SCREENSHOT_UI_SCALE = 1.0
+
+
+def _parse_screenshot_ui_scale(raw: str) -> float:
+    """Parse the evidence scale, deliberately restricted to 100%.
+
+    The application itself still supports its full accessibility scale range.
+    This harness has a different contract: every newly generated evidence
+    image must be directly comparable and must use the requested 100% UI
+    scale. Rejecting other values is safer than silently producing a mixed
+    scale artifact.
+    """
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("--ui-scale 必须是 1.0（100%）") from None
+    if not math.isclose(value, SCREENSHOT_UI_SCALE, rel_tol=0.0, abs_tol=1e-12):
+        raise argparse.ArgumentTypeError(
+            "证据截图只允许 1.0（100%）；程序界面本身仍可在设置中缩放"
+        )
+    return SCREENSHOT_UI_SCALE
+
+
 def _save(window: MainWindow, path: Path) -> None:
     QApplication.processEvents()
     pixmap = window.grab()
@@ -59,9 +83,8 @@ def main() -> int:
     )
     parser.add_argument("--view-zoom", type=float, default=1.0)
     parser.add_argument(
-        "--ui-scale", type=float,
-        help="仅渲染指定界面缩放比例（0.8–1.8），同时输出亮/暗主题。"
-             "未指定时保留默认的 100%% + 150%% 回归截图。",
+        "--ui-scale", type=_parse_screenshot_ui_scale,
+        help="证据截图界面缩放；固定为 1.0（100%），同时输出亮/暗主题。",
     )
     parser.add_argument(
         "--window-width", type=int, default=1440,
@@ -178,8 +201,7 @@ def main() -> int:
         default="combined",
     )
     args = parser.parse_args()
-    if args.ui_scale is not None and not 0.8 <= args.ui_scale <= 1.8:
-        parser.error("--ui-scale 必须位于 0.8..1.8")
+    ui_scale = args.ui_scale if args.ui_scale is not None else SCREENSHOT_UI_SCALE
     if args.window_width < 900 or args.window_height < 600:
         parser.error("--window-width 至少 900，--window-height 至少 600")
     args.output.mkdir(parents=True, exist_ok=True)
@@ -190,7 +212,7 @@ def main() -> int:
     window = MainWindow()
     if args.intercell_dialog_demo or args.intercell_large_offset_demo:
         window._set_theme_mode("dark")
-        window._set_ui_scale(1.5, persist=False)
+        window._set_ui_scale(ui_scale, persist=False)
         dialog = HoppingDialog(0, 1, window, semi=True, site_count=6)
         custom_index = dialog.cell_relation.findData("custom")
         if custom_index < 0:
@@ -209,7 +231,7 @@ def main() -> int:
         dialog.resize(620, 500)
         dialog.show()
         QApplication.processEvents()
-        path = args.output / f"{args.prefix}-dark-150.png"
+        path = args.output / f"{args.prefix}-dark-100.png"
         pixmap = dialog.grab()
         if not pixmap.save(str(path)):
             raise OSError(f"failed to save screenshot: {path}")
@@ -252,7 +274,7 @@ def main() -> int:
             group.setExpanded(False)
         window.panel.boundary_group.setExpanded(True)
         window.set_dirty(False)
-        scale = int(round((args.ui_scale or 1.0) * 100))
+        scale = int(round(ui_scale * 100))
         for theme in ("light", "dark"):
             window._set_theme_mode(theme)
             QApplication.processEvents()
@@ -277,7 +299,7 @@ def main() -> int:
         window.panel.boundary_group.setExpanded(True)
         window.panel_scroll.ensureWidgetVisible(window.panel.error_label)
         window.set_dirty(False)
-        scale = int(round((args.ui_scale or 1.0) * 100))
+        scale = int(round(ui_scale * 100))
         for theme in ("light", "dark"):
             window._set_theme_mode(theme)
             QApplication.processEvents()
@@ -323,7 +345,7 @@ def main() -> int:
     }[args.tab])
     if args.intercell_panel_demo:
         window._set_theme_mode("dark")
-        window._set_ui_scale(1.5, persist=False)
+        window._set_ui_scale(ui_scale, persist=False)
         for group in (
             window.panel.boundary_group,
             window.panel.params_group,
@@ -335,7 +357,7 @@ def main() -> int:
         window.panel.hops_group.setExpanded(True)
         window.panel_scroll.ensureWidgetVisible(window.panel.hops_group)
         QApplication.processEvents()
-        _save(window, args.output / f"{args.prefix}-dark-150.png")
+        _save(window, args.output / f"{args.prefix}-dark-100.png")
         window.set_dirty(False)
         window.close()
         return 0
@@ -343,7 +365,7 @@ def main() -> int:
         # Keep the evidence focused on the table itself: one intra-cell and
         # one inter-cell row are enough to verify the semantic tint, tooltips,
         # and compact layout without a dense model obscuring the distinction.
-        window._set_ui_scale(args.ui_scale or 1.0, persist=False)
+        window._set_ui_scale(ui_scale, persist=False)
         for group in (
             window.panel.boundary_group,
             window.panel.params_group,
@@ -360,7 +382,7 @@ def main() -> int:
         for theme in ("light", "dark"):
             window._set_theme_mode(theme)
             QApplication.processEvents()
-            scale = int(round((args.ui_scale or 1.0) * 100))
+            scale = int(round(ui_scale * 100))
             _save(window, args.output / f"{args.prefix}-{theme}-{scale}.png")
             menu = window.panel._create_hop_context_menu(
                 window.panel.hop_table.rowCount() - 1
@@ -391,8 +413,8 @@ def main() -> int:
         window.panel.hops_group.setExpanded(False)
         window.panel_scroll.ensureWidgetVisible(window.panel.sites_group)
         window.set_dirty(False)
-        window._set_ui_scale(args.ui_scale or 1.0, persist=False)
-        scale = int(round((args.ui_scale or 1.0) * 100))
+        window._set_ui_scale(ui_scale, persist=False)
+        scale = int(round(ui_scale * 100))
         for theme in ("light", "dark"):
             window._set_theme_mode(theme)
             QApplication.processEvents()
@@ -434,11 +456,11 @@ def main() -> int:
         window.panel.hops_group.setExpanded(False)
         window.panel_scroll.ensureWidgetVisible(window.panel.sites_group)
         window.set_dirty(False)
-        window._set_ui_scale(args.ui_scale or 1.0, persist=False)
+        window._set_ui_scale(ui_scale, persist=False)
         window.statusBar().showMessage(
             f"{spacing_text}；编辑锚点与吸附参考已同步"
         )
-        scale = int(round((args.ui_scale or 1.0) * 100))
+        scale = int(round(ui_scale * 100))
         for theme in ("light", "dark"):
             window._set_theme_mode(theme)
             QApplication.processEvents()
@@ -453,7 +475,7 @@ def main() -> int:
         # Capture the popup itself because QWidget.grab() intentionally does
         # not include a separate QMenu top-level window.
         window._set_theme_mode("dark")
-        window._set_ui_scale(1.5, persist=False)
+        window._set_ui_scale(ui_scale, persist=False)
         QApplication.processEvents()
         window.panel.hops_group.setExpanded(True)
         window.panel.add_hop_mode_btn.ensurePolished()
@@ -462,7 +484,7 @@ def main() -> int:
             QPoint(0, window.panel.add_hop_mode_btn.height())
         ))
         QApplication.processEvents()
-        path = args.output / f"{args.prefix}-dark-150.png"
+        path = args.output / f"{args.prefix}-dark-100.png"
         pixmap = menu.grab()
         if not pixmap.save(str(path)):
             raise OSError(f"failed to save screenshot: {path}")
@@ -472,7 +494,7 @@ def main() -> int:
         return 0
     if args.diagonal_intercell_demo:
         window._set_theme_mode("dark")
-        window._set_ui_scale(1.5, persist=False)
+        window._set_ui_scale(ui_scale, persist=False)
         for group in (
             window.panel.boundary_group,
             window.panel.params_group,
@@ -492,12 +514,12 @@ def main() -> int:
         window.panel.hop_table.item(last_row, 4).setText("1")
         controller.rebuild()
         QApplication.processEvents()
-        _save(window, args.output / f"{args.prefix}-dark-150.png")
+        _save(window, args.output / f"{args.prefix}-dark-100.png")
         window.close()
         return 0
     if args.selected_intercell_demo:
         window._set_theme_mode("dark")
-        window._set_ui_scale(1.5, persist=False)
+        window._set_ui_scale(ui_scale, persist=False)
         for group in (
             window.panel.boundary_group,
             window.panel.params_group,
@@ -530,7 +552,7 @@ def main() -> int:
             f"已沿用选中键 {selected['from_site']}→{selected['to_site']} 添加右侧胞间项"
         )
         QApplication.processEvents()
-        _save(window, args.output / f"{args.prefix}-dark-150.png")
+        _save(window, args.output / f"{args.prefix}-dark-100.png")
         # This is a read-only evidence pass; do not open the save-confirmation
         # dialog while closing the intentionally modified demo document.
         window.set_dirty(False)
@@ -725,15 +747,12 @@ def main() -> int:
                 target_view.centerOn(matrix_rect.center())
         QApplication.processEvents()
 
-    # The historical default emits light100/dark100/dark150 so existing
-    # evidence links remain stable.  A requested scale emits both themes at
-    # that exact scale, allowing a real multi-scale clipping audit instead of
-    # assuming that the 150% frame represents every user's DPI setting.
-    if args.ui_scale is None:
-        scale_plan = (("light", 1.0), ("dark", 1.0), ("dark", 1.5))
-    else:
-        scale_plan = (("light", float(args.ui_scale)),
-                      ("dark", float(args.ui_scale)))
+    # Evidence output is intentionally deterministic: every new frame uses
+    # the required 100% application scale, with one light and one dark image.
+    # Accessibility/multi-scale behavior remains covered by widget geometry
+    # tests and the live application's own settings; it is not emitted as
+    # mixed-scale evidence here.
+    scale_plan = (("light", ui_scale), ("dark", ui_scale))
     for mode, ui_scale in scale_plan:
         window._set_theme_mode(mode)
         window._set_ui_scale(ui_scale, persist=False)
@@ -780,7 +799,7 @@ def main() -> int:
             window.menuBar().mapToGlobal(QPoint(48, window.menuBar().height()))
         )
         QApplication.processEvents()
-        _save(window, args.output / f"{args.prefix}-history-menu-dark-150.png")
+        _save(window, args.output / f"{args.prefix}-history-menu-dark-100.png")
         window.edit_menu.hide()
     if args.matrix_copy_demo:
         # Capture the actual menu popup so the affordance is visible in the
@@ -789,7 +808,7 @@ def main() -> int:
             window.menuBar().mapToGlobal(QPoint(48, window.menuBar().height()))
         )
         QApplication.processEvents()
-        menu_path = args.output / f"{args.prefix}-matrix-copy-menu-dark-150.png"
+        menu_path = args.output / f"{args.prefix}-matrix-copy-menu-dark-100.png"
         menu_pixmap = window.edit_menu.grab()
         if not menu_pixmap.save(str(menu_path)):
             raise OSError(f"failed to save screenshot: {menu_path}")

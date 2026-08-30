@@ -156,21 +156,42 @@ class _Script(_Node):
         base = self.base.box(font)
         return -base.ascent * self.SUPER_RAISE, base.ascent * self.SUB_DROP
 
+    def _script_width(self, font: QFont) -> float:
+        """Return the widest script in the font used to draw it.
+
+        The layout deliberately gives scripts a small TeX-like horizontal
+        overlap.  Keeping the width calculation in one helper is important:
+        ``box()`` and ``draw()`` must reserve and use exactly the same origin,
+        otherwise a sub/superscript can be painted outside the item's bounds
+        and get clipped at a matrix-cell edge.
+        """
+        script_width = 0.0
+        if self.superscript is not None:
+            script_width = max(script_width, self.superscript.box(font).width)
+        if self.subscript is not None:
+            script_width = max(script_width, self.subscript.box(font).width)
+        return script_width
+
+    def _script_origin(self, font: QFont) -> float:
+        """Return the script x-origin relative to this atom's left edge."""
+        base_width = self.base.box(font).width
+        # ``box()`` reserves 94% of the script width.  Shift the drawn script
+        # by the same 6% overlap so its right edge stays inside that reserve.
+        return base_width - self._script_width(self._script_font(font)) * 0.06
+
     def box(self, font: QFont) -> _Box:
         base = self.base.box(font)
         script_font = self._script_font(font)
         super_offset, sub_offset = self._offsets(font)
         width = base.width
         ascent, descent = base.ascent, base.descent
-        script_width = 0.0
+        script_width = self._script_width(script_font)
         if self.superscript is not None:
             sup = self.superscript.box(script_font)
-            script_width = max(script_width, sup.width)
             ascent = max(ascent, -super_offset + sup.ascent)
             descent = max(descent, super_offset + sup.descent)
         if self.subscript is not None:
             sub = self.subscript.box(script_font)
-            script_width = max(script_width, sub.width)
             ascent = max(ascent, -sub_offset + sub.ascent)
             descent = max(descent, sub_offset + sub.descent)
         # Slight horizontal overlap matches TeX's compact script kerning.
@@ -179,10 +200,9 @@ class _Script(_Node):
     def draw(self, painter: QPainter, x: float, baseline: float,
              font: QFont, color: QColor) -> None:
         self.base.draw(painter, x, baseline, font, color)
-        base_width = self.base.box(font).width
         script_font = self._script_font(font)
         super_offset, sub_offset = self._offsets(font)
-        script_x = x + base_width
+        script_x = x + self._script_origin(font)
         if self.superscript is not None:
             self.superscript.draw(
                 painter, script_x, baseline + super_offset, script_font, color,

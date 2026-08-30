@@ -167,6 +167,33 @@ def test_nested_bloch_subscript_stays_high_inside_raised_exponent():
     assert outer_raise + inner_drop < -0.30 * QFontMetricsF(font).ascent()
 
 
+def test_math_script_draw_origin_matches_reserved_compact_width():
+    """上下标的实际绘制范围必须与单元格预留宽度一致，避免边界裁切。"""
+    from hamivisualizer.view.math_text import MathLayout, math_font
+
+    _app()
+    font = math_font(24)
+    layout = MathLayout(r"e^{-ik_{x}}")
+    outer = next(node for node in layout.lines[0].children
+                 if node.__class__.__name__ == "_Script")
+    script_font = outer._script_font(font)
+    base_width = outer.base.box(font).width
+    script_width = outer._script_width(script_font)
+
+    # The compact 0.94 reservation and the draw origin must describe the
+    # same right edge.  The old implementation drew at base_width, extending
+    # six percent beyond the QGraphicsItem boundingRect.
+    assert outer.box(font).width == pytest.approx(
+        base_width + script_width * 0.94,
+    )
+    assert outer._script_origin(font) == pytest.approx(
+        base_width - script_width * 0.06,
+    )
+    assert outer._script_origin(font) + script_width == pytest.approx(
+        outer.box(font).width,
+    )
+
+
 def test_lattice_view_smoke():
     _app()
     data = LatticeSceneData(

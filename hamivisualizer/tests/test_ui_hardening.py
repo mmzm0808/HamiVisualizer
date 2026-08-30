@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import math
 import argparse
+from datetime import datetime
+import re
 import subprocess
 import sys
 from copy import deepcopy
@@ -50,6 +52,22 @@ from hamivisualizer.view.rendermodel import LatticeSceneData, MatrixSceneData, W
 from hamivisualizer.view.zoom_view import ZoomGraphicsView
 from hamivisualizer.view.wavefunction_view import WavefunctionView
 from hamivisualizer.model.symbolic import ElementFormatter
+
+
+def test_polishing_brief_codex_entries_are_newest_first():
+    """持续打磨简报中的 Codex 条目必须按北京时间从新到旧排列。"""
+    brief = Path(__file__).resolve().parents[2] / "docs" / "持续打磨简报.md"
+    text = brief.read_text(encoding="utf-8")
+    stamps = [
+        datetime.fromisoformat(match)
+        for match in re.findall(
+            r"^## 【Codex】 (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2})",
+            text,
+            flags=re.MULTILINE,
+        )
+    ]
+    assert stamps, "简报至少应保留一条带北京时间的 Codex 记录"
+    assert stamps == sorted(stamps, reverse=True)
 
 
 def test_evidence_renderer_rejects_non_100_percent_output_scale():

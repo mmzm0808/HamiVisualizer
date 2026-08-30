@@ -36,6 +36,7 @@ from hamivisualizer.model.hopping import HoppingTerm
 from hamivisualizer.model.lattice import Lattice, Site
 from hamivisualizer.model.expression import evaluate_expression
 from hamivisualizer.model.templates import TEMPLATE_NAMES, template_document
+from hamivisualizer.model.workspace import load_preferences
 from hamivisualizer.view.main_window import MainWindow
 from hamivisualizer.view.dialogs import HoppingDialog, TemplateDialog
 from hamivisualizer.view.matrix_view import MARGIN, MatrixView, RASTER_THRESHOLD
@@ -67,6 +68,33 @@ def _window():
     ctrl = ViewController(win)
     ctrl.load_preset("NP")
     return app, win, ctrl
+
+
+def test_edit_toolbar_exposes_and_persists_snap_step(tmp_path):
+    """吸附步长应在编辑工具栏可达，并与偏好设置保持一致。"""
+    _app, win, ctrl = _window()
+    win._workspace_root = tmp_path
+    win.enable_workspace_mode(ctrl)
+    win.show()
+    _app.processEvents()
+
+    assert win.lattice_snap_step_widget.isHidden()
+    win._set_lattice_edit_mode(True)
+    assert win.lattice_snap_step_widget.isVisible()
+    assert win.lattice_snap_step_spin.value() == pytest.approx(0.25)
+
+    win.lattice_snap_step_spin.setValue(0.125)
+    assert win.lattice_scene.snap_step == pytest.approx(0.125)
+    assert load_preferences(tmp_path).snap_step == pytest.approx(0.125)
+    assert "吸附间隔" in win.lattice_snap_step_spin.toolTip()
+
+    # Turning snapping off makes the inactive control honest while preserving
+    # the chosen interval for the next time snapping is enabled.
+    win.lattice_snap_btn.setChecked(False)
+    assert not win.lattice_snap_step_spin.isEnabled()
+    win.lattice_snap_btn.setChecked(True)
+    assert win.lattice_snap_step_spin.isEnabled()
+    assert win.lattice_snap_step_spin.value() == pytest.approx(0.125)
 
 
 def test_dimension_resource_hint_is_live_and_does_not_restrict_editing():

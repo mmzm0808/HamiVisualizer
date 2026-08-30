@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+import math
 from pathlib import Path
 import re
 
@@ -11,7 +12,7 @@ from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QAbstractSpinBox, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QInputDialog,
-    QLabel, QMainWindow, QMessageBox, QScrollArea, QSplitter, QTabBar,
+    QLabel, QMainWindow, QMessageBox, QDoubleSpinBox, QScrollArea, QSplitter, QTabBar,
     QTabWidget, QToolButton, QVBoxLayout, QWidget, QSizePolicy,
 )
 
@@ -145,6 +146,32 @@ class MainWindow(QMainWindow):
         self.lattice_snap_btn.setToolTip(
             "拖动格点时吸附到网格和精确几何位置；按住 Alt 可临时自由移动"
         )
+        # Keep the snap granularity beside the mode switch.  The preference
+        # dialog remains the durable/global fallback, while an editor-local
+        # field makes the common "move, try a finer grid, try again" workflow
+        # discoverable without leaving the canvas.  A compact composite widget
+        # reflows with the same toolbar grid as the action buttons and avoids
+        # the horizontal overflow that a separate permanent column caused at
+        # large accessibility scales.
+        self.lattice_snap_step_widget = QWidget()
+        snap_step_layout = QHBoxLayout(self.lattice_snap_step_widget)
+        snap_step_layout.setContentsMargins(2, 0, 2, 0)
+        snap_step_layout.setSpacing(3)
+        snap_step_label = QLabel("步长")
+        snap_step_label.setToolTip("设置晶格编辑时的网格吸附间隔")
+        self.lattice_snap_step_spin = QDoubleSpinBox()
+        self.lattice_snap_step_spin.setRange(0.001, 10.0)
+        self.lattice_snap_step_spin.setDecimals(3)
+        self.lattice_snap_step_spin.setSingleStep(0.05)
+        self.lattice_snap_step_spin.setValue(self.lattice_scene.snap_step)
+        self.lattice_snap_step_spin.setSuffix("")
+        self.lattice_snap_step_spin.setFixedWidth(78)
+        self.lattice_snap_step_spin.setToolTip(
+            "晶格编辑吸附间隔；例如 0.25 表示每 1/4 个单位吸附一次。"
+            "关闭吸附时该值保留，重新开启后继续使用。"
+        )
+        snap_step_layout.addWidget(snap_step_label)
+        snap_step_layout.addWidget(self.lattice_snap_step_spin)
         self.lattice_coeff_btn = QToolButton()
         self.lattice_coeff_btn.setText("系数：点击编辑")
         self.lattice_coeff_btn.setCheckable(True)
@@ -180,6 +207,7 @@ class MainWindow(QMainWindow):
         self.lattice_redo_btn.hide()
         self.lattice_restore_btn.hide()
         self.lattice_snap_btn.hide()
+        self.lattice_snap_step_widget.hide()
         self.lattice_coeff_btn.hide()
         self.lattice_details_btn.hide()
         self.lattice_add_hop_btn.hide()
@@ -196,6 +224,7 @@ class MainWindow(QMainWindow):
             self.lattice_redo_btn,
             self.lattice_restore_btn,
             self.lattice_snap_btn,
+            self.lattice_snap_step_widget,
             self.lattice_add_site_btn,
             self.lattice_add_hop_btn,
             self.lattice_details_btn,
@@ -287,6 +316,7 @@ class MainWindow(QMainWindow):
         self.matrix_scene.selectionChanged.connect(self._on_matrix_selection_changed)
         self.lattice_mode_btn.toggled.connect(self._set_lattice_edit_mode)
         self.lattice_snap_btn.toggled.connect(self._set_snap_enabled)
+        self.lattice_snap_step_spin.valueChanged.connect(self._set_snap_step)
         self.lattice_add_site_btn.toggled.connect(self._set_site_creation_mode)
         self.lattice_add_hop_btn.toggled.connect(self._set_hop_creation_mode)
         self.lattice_details_btn.toggled.connect(self._set_lattice_edit_details)
@@ -484,6 +514,7 @@ class MainWindow(QMainWindow):
         self.lattice_redo_btn.setVisible(bool(enabled))
         self.lattice_restore_btn.setVisible(bool(enabled and self._edit_baseline_geometry))
         self.lattice_snap_btn.setVisible(bool(enabled))
+        self.lattice_snap_step_widget.setVisible(bool(enabled))
         self.lattice_add_site_btn.setVisible(bool(enabled))
         self.lattice_add_hop_btn.setVisible(bool(enabled))
         self.lattice_details_btn.setVisible(bool(enabled))
@@ -531,10 +562,29 @@ class MainWindow(QMainWindow):
 
     def _set_snap_enabled(self, enabled: bool):
         self.lattice_scene.set_snap_enabled(enabled)
+        self.lattice_snap_step_spin.setEnabled(bool(enabled))
         if self.lattice_mode_btn.isChecked():
             mode = "智能吸附" if enabled else "自由移动"
             self.statusBar().showMessage(
                 f"编辑模式：{mode}；Alt 临时自由移动；Esc 取消拖动；点击元胞跃迁线改系数"
+            )
+
+    def _set_snap_step(self, value: float):
+        """Apply an editor-local snap interval without rebuilding the model."""
+        try:
+            step = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(step):
+            return
+        step = max(0.001, min(10.0, step))
+        self.lattice_scene.snap_step = step
+        if self._workspace_enabled:
+            self.preferences.snap_step = step
+            save_preferences(self.preferences, self._workspace_root)
+        if self.lattice_mode_btn.isChecked():
+            self.statusBar().showMessage(
+                f"吸附网格步长已设为 {step:g}；拖动格点时将按此间隔对齐", 1800
             )
 
     def _set_hop_creation_mode(self, enabled: bool):
@@ -800,6 +850,10 @@ class MainWindow(QMainWindow):
         self.lattice_snap_btn.blockSignals(True)
         self.lattice_snap_btn.setChecked(self.preferences.snap_enabled)
         self.lattice_snap_btn.blockSignals(False)
+        self.lattice_snap_step_spin.blockSignals(True)
+        self.lattice_snap_step_spin.setValue(self.preferences.snap_step)
+        self.lattice_snap_step_spin.blockSignals(False)
+        self.lattice_snap_step_spin.setEnabled(self.preferences.snap_enabled)
         controller.set_runtime_preferences(
             debounce_ms=self.preferences.debounce_ms,
             calculation_mode=self.preferences.calculation_mode,
@@ -1433,6 +1487,10 @@ class MainWindow(QMainWindow):
         self.lattice_snap_btn.blockSignals(True)
         self.lattice_snap_btn.setChecked(self.preferences.snap_enabled)
         self.lattice_snap_btn.blockSignals(False)
+        self.lattice_snap_step_spin.blockSignals(True)
+        self.lattice_snap_step_spin.setValue(self.preferences.snap_step)
+        self.lattice_snap_step_spin.blockSignals(False)
+        self.lattice_snap_step_spin.setEnabled(self.preferences.snap_enabled)
         for session in self._sessions:
             session.history.set_limit(self.preferences.undo_limit)
         self.controller.set_runtime_preferences(

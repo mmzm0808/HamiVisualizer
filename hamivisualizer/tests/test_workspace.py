@@ -8,6 +8,7 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtTest import QTest
 import pytest
 
 from hamivisualizer.controller import ViewController
@@ -305,3 +306,40 @@ def test_saved_workspace_restores_all_model_tabs(tmp_path):
     second.enable_workspace_mode(second_controller)
     assert second.model_bar.count() == 2
     assert {s.meta.name for s in second._sessions} == {"NP", "SC"}
+
+
+def test_workspace_restores_autosaved_active_tab_and_comparison_state(tmp_path):
+    """Autosaved tabs and split comparison selection survive a new window."""
+    app, first, _controller = _workspace(tmp_path)
+    first._add_template("SC")
+    app.processEvents()
+    # The autosave timer is deliberately asynchronous in the real UI.  Wait
+    # longer than its debounce interval so this test exercises the same path
+    # as a user who switches/restarts after the save indicator settles.
+    QTest.qWait(900)
+    app.processEvents()
+    first.action_split.setChecked(True)
+    first.comparison.model_combo.setCurrentIndex(0)
+    first.comparison.result_combo.setCurrentIndex(2)  # 晶格
+    first._save_workspace_state()
+    expected_ids = [session.meta.id for session in first._sessions]
+
+    second = MainWindow()
+    second_controller = ViewController(second, connect_actions=False)
+    second.controller = second_controller
+    second_controller.load_preset("NP")
+    second._workspace_root = tmp_path
+    second.enable_workspace_mode(second_controller)
+    second.resize(1400, 900)
+    second.show()
+    app.processEvents()
+
+    assert [session.meta.name for session in second._sessions] == ["NP", "SC"]
+    assert [session.meta.id for session in second._sessions] == expected_ids
+    assert second._active_index == 1
+    assert second._sessions[second._active_index].meta.name == "SC"
+    assert second.action_split.isChecked() is True
+    assert second.comparison.selected_model_id == expected_ids[0]
+    assert second.comparison.selected_result == "晶格"
+    assert second.comparison.lattice_scene._data is not None
+    assert second.comparison.lattice_scene.sceneRect().isValid()

@@ -1605,6 +1605,20 @@ class MainWindow(QMainWindow):
         if self.comparison.isVisible():
             self.comparison.fit_current()
 
+    def showEvent(self, event):
+        """Finish deferred workspace views after the window has a real viewport.
+
+        Workspace restoration runs before ``main()`` shows the window.  A
+        comparison cache cannot be fitted while its graphics view has a
+        zero-sized viewport, so the initial refresh may intentionally be
+        skipped.  Retry once on the first visible frame; this prevents a
+        restored split-comparison pane from appearing blank until the user
+        changes tabs or models.
+        """
+        super().showEvent(event)
+        if self._workspace_enabled and self.action_split.isChecked():
+            QTimer.singleShot(0, self._refresh_comparison)
+
     def all_views(self) -> list:
         return [
             self.matrix_gv, self.lattice_gv, self.band_gv,

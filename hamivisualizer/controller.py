@@ -654,7 +654,7 @@ class ViewController(QObject):
     def _on_hopping_strength_edited(self, row: int, strength: float) -> None:
         """Apply a canvas coefficient and retain it through UI-only redraws."""
         panel = self.window.panel
-        panel.set_hopping_strength(int(row), float(strength))
+        summary = panel.set_hopping_strength(int(row), float(strength))
         # ``set_hopping_strength`` reports validation failures through the
         # panel error label and returns without changing the document.  Only
         # accepted values may update the transient canvas edit context;
@@ -674,6 +674,12 @@ class ViewController(QObject):
         callback = getattr(self.window, "document_committed", None)
         if callback is not None:
             callback(self._current_document())
+        if summary:
+            # The generic input-changed callback intentionally announces a
+            # stale result first.  A committed coefficient is a completed,
+            # valid edit, so replace that transient warning with the concrete
+            # normalized relation the user needs to verify.
+            self.window.flash_status(summary, duration_ms=3000)
 
     def _on_display_changed(self, reason: str):
         """Apply presentation-only options without rebuilding the Hamiltonian."""

@@ -1360,8 +1360,13 @@ def test_oblique_a1_vertical_component_moves_hop_editor_endpoint():
 def test_honeycomb_strength_editor_normalizes_to_four_to_one():
     _app, win, ctrl = _window()
     ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    summary = None
     for row, value in ((0, 1.2), (1, 0.3), (2, 0.3)):
-        win.panel.set_hopping_strength(row, value)
+        summary = win.panel.set_hopping_strength(row, value)
+    assert summary is not None
+    assert "胞内=4×t" in summary
+    assert "胞间(-1,0)=t" in summary
+    assert "基准 t=0.3" in summary
     rows = win.panel.get_hop_rows()
     assert [row["amplitude"] for row in rows] == ["-4*t", "-t", "-t"]
     params = win.panel.get_params()
@@ -1823,6 +1828,8 @@ def test_strength_editor_center_click_accepts_fraction_without_canvas_pan():
     assert editor.text().startswith("0.")
     assert editor.fontMetrics().horizontalAdvance(editor.text()) <= editor.width() - 20
     assert editor.cursorPosition() == 0
+    assert "已归一化" in win.statusBar().currentMessage()
+    assert "基准 t=" in win.statusBar().currentMessage()
 
 
 def test_strength_editor_remeasures_after_ui_scale_changes():

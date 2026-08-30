@@ -1431,19 +1431,25 @@ class ControlPanel(QWidget):
             self.ly_spin.blockSignals(old_ly)
         self._sync_vector_spins()
 
-    def set_hopping_strength(self, row: int, strength: float):
+    def set_hopping_strength(self, row: int, strength: float) -> str | None:
         """Apply an absolute bond strength and normalize its named group.
 
         For strengths 1.2 and 0.3 in the ``t`` group this writes ``-4*t`` and
         ``-t`` while setting the numeric parameter ``t`` to 0.3.  Thus symbolic
         and numerical views remain two representations of the same physics.
+
+        The accepted edit also returns a compact human-facing summary.  The
+        controller uses it in the status bar so the user can immediately
+        verify how the absolute canvas value was translated into the group's
+        relative coefficients; callers that only need the mutation may ignore
+        the return value for backwards compatibility.
         """
         if not (0 <= int(row) < self.hop_table.rowCount()):
-            return
+            return None
         strength = float(strength)
         if not math.isfinite(strength) or strength <= 0:
             self.set_error("跃迁强度必须是正的有限数值")
-            return
+            return None
         parsed_rows = self._get_hop_rows_with_indices()
         selected_entry = next(
             ((table_row, hop) for table_row, hop in parsed_rows
@@ -1452,7 +1458,7 @@ class ControlPanel(QWidget):
         )
         if selected_entry is None:
             self.set_error("所选跃迁行为空或已失效，请重新选择跃迁线")
-            return
+            return None
         _selected_table_row, selected = selected_entry
         group_name = selected["name"]
         params = self.get_params()
@@ -1471,7 +1477,7 @@ class ControlPanel(QWidget):
             value = evaluate_expression(hop["amplitude"], params)
             if abs(value.imag) > 1e-9:
                 self.set_error("带复振幅的跃迁请使用 phase 列编辑，不能只改强度")
-                return
+                return None
             signs[table_row] = -1 if value.real < 0 else 1
             magnitude = strength if table_row == int(row) else abs(value.real)
             physical[table_row] = Fraction(f"{magnitude:.12g}").limit_denominator(100000)
@@ -1486,7 +1492,7 @@ class ControlPanel(QWidget):
         base = Fraction(common, denominator)
         if base <= 0:
             self.set_error("无法从跃迁强度得到有效比例")
-            return
+            return None
         self.hop_table.blockSignals(True)
         try:
             for table_row, _hop in group_entries:
@@ -1502,6 +1508,33 @@ class ControlPanel(QWidget):
         self.set_params(params, force=True)
         self.set_error("")
         self._emit_changed()
+
+        # Report the final normalized relation in table order.  Keep the
+        # message short enough for a status bar while preserving the exact
+        # offset that distinguishes an x-Bloch inter-cell term from an
+        # intracell term.  The table remains the authoritative full view for
+        # groups with many rows.
+        def relation_label(hop: dict) -> str:
+            ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
+            if ox == 0 and oy == 0:
+                return "胞内"
+            def offset_text(value: int) -> str:
+                return "0" if value == 0 else f"{value:+d}"
+            return f"胞间({offset_text(ox)},{offset_text(oy)})"
+
+        relation_parts = []
+        for table_row, hop in group_entries[:6]:
+            ratio = int(physical[table_row] / base)
+            factor = "" if ratio == 1 else f"{ratio}×"
+            relation_parts.append(
+                f"{relation_label(hop)}={factor}{parameter}"
+            )
+        if len(group_entries) > 6:
+            relation_parts.append(f"…共 {len(group_entries)} 条")
+        return (
+            f"已归一化「{group_name}」（幅度）：" + "；".join(relation_parts)
+            + f"；基准 {parameter}={float(base):g}"
+        )
 
     def _get_hop_rows_with_indices(self) -> list[tuple[int, dict]]:
         """Parse hopping rows while retaining their physical table indices.

@@ -664,18 +664,64 @@ class LatticeView(QGraphicsScene):
                 required_2 = math.lcm(required_2, fv.denominator)
         return required_1, required_2
 
+    def _scene_to_local(self, point: QPointF) -> tuple[float, float]:
+        """Convert a scene point into the editable cell's local coordinates.
+
+        The editor draws the selected primitive cell at ``_edit_anchor_offset``
+        and flips the physical y axis for Qt. Keeping that pair of operations
+        in one helper prevents the grid, drag constraint and site-creation
+        tools from silently adopting different origins or signs.
+        """
+        anchor_x, anchor_y = self._edit_anchor_offset
+        point = QPointF(point)
+        return (
+            float(point.x() - anchor_x),
+            float(-point.y() - anchor_y),
+        )
+
+    def _local_to_scene(self, x: float, y: float) -> QPointF:
+        """Convert editable local physical coordinates into scene space."""
+        anchor_x, anchor_y = self._edit_anchor_offset
+        return QPointF(
+            float(anchor_x + x),
+            float(-(anchor_y + y)),
+        )
+
+    def _local_to_fractional(self, x: float, y: float) -> tuple[float, float] | None:
+        """Return Bravais ``(u, v)`` coordinates for a local point.
+
+        ``None`` is returned for unconstrained/degenerate stand-alone scenes.
+        Callers can therefore share this conversion without applying oblique
+        cell math to plug-in scenes that intentionally use Cartesian values.
+        """
+        if not self._edit_cell_constrained:
+            return None
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
+        det = a1x * a2y - a1y * a2x
+        if abs(det) < 1e-12:
+            return None
+        return (
+            (float(x) * a2y - float(y) * a2x) / det,
+            (a1x * float(y) - a1y * float(x)) / det,
+        )
+
+    def _fractional_to_local(self, u: float, v: float) -> tuple[float, float]:
+        """Map Bravais fractional coordinates to local physical coordinates."""
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
+        return (
+            float(u) * a1x + float(v) * a2x,
+            float(u) * a1y + float(v) * a2y,
+        )
+
     def _snap_local_point(self, x: float, y: float, step: float) -> tuple[float, float]:
         """Round a local physical point in the same coordinates as the grid."""
-        if self._edit_cell_constrained:
-            (a1x, a1y), (a2x, a2y) = self._cell_vectors
-            det = a1x * a2y - a1y * a2x
-            if abs(det) >= 1e-12:
-                u = (x * a2y - y * a2x) / det
-                v = (a1x * y - a1y * x) / det
-                n1, n2 = self._bravais_grid_counts(step)
-                u = round(u * n1) / n1
-                v = round(v * n2) / n2
-                return u * a1x + v * a2x, u * a1y + v * a2y
+        fractional = self._local_to_fractional(x, y)
+        if fractional is not None:
+            u, v = fractional
+            n1, n2 = self._bravais_grid_counts(step)
+            u = round(u * n1) / n1
+            v = round(v * n2) / n2
+            return self._fractional_to_local(u, v)
         return round(x / step) * step, round(y / step) * step
 
     def _snap_grid_bounds(self) -> QRectF:
@@ -692,12 +738,11 @@ class LatticeView(QGraphicsScene):
         if not self._edit_cell_constrained or scene_rect.isEmpty():
             return scene_rect
         (a1x, a1y), (a2x, a2y) = self._cell_vectors
-        anchor_x, anchor_y = self._edit_anchor_offset
         corners = [
-            QPointF(anchor_x, -anchor_y),
-            QPointF(anchor_x + a1x, -(anchor_y + a1y)),
-            QPointF(anchor_x + a2x, -(anchor_y + a2y)),
-            QPointF(anchor_x + a1x + a2x, -(anchor_y + a1y + a2y)),
+            self._local_to_scene(0.0, 0.0),
+            self._local_to_scene(a1x, a1y),
+            self._local_to_scene(a2x, a2y),
+            self._local_to_scene(a1x + a2x, a1y + a2y),
         ]
         left = min(point.x() for point in corners)
         right = max(point.x() for point in corners)
@@ -757,8 +802,10 @@ class LatticeView(QGraphicsScene):
                 u = i / n1
                 for j in range(n2):
                     v = j / n2
-                    x = anchor_x + u * a1x + v * a2x
-                    y = -(anchor_y + u * a1y + v * a2y)
+                    point = self._local_to_scene(
+                        *self._fractional_to_local(u, v)
+                    )
+                    x, y = point.x(), point.y()
                     item = QGraphicsEllipseItem(x - radius, y - radius,
                                                 2 * radius, 2 * radius)
                     item.setBrush(QBrush(color))
@@ -845,16 +892,13 @@ class LatticeView(QGraphicsScene):
             ]
             seen_targets: set[tuple[int, int]] = set()
             for sx, sy, target_kind in targets:
-                tx = float(sx) + anchor_x
-                ty = -float(sy) - anchor_y
-                target = QPointF(tx, ty)
+                target = self._local_to_scene(float(sx), float(sy))
+                tx, ty = target.x(), target.y()
                 if not rect.contains(target):
                     continue
                 if abs(cell_det) >= 1e-12:
-                    local_x = tx - anchor_x
-                    local_y = -ty - anchor_y
-                    u = (local_x * a2y - local_y * a2x) / cell_det
-                    v = (a1x * local_y - a1y * local_x) / cell_det
+                    local_x, local_y = self._scene_to_local(target)
+                    u, v = self._local_to_fractional(local_x, local_y)
                     if not (-1e-9 <= u < 1.0 - 1e-9
                             and -1e-9 <= v < 1.0 - 1e-9):
                         continue
@@ -1095,15 +1139,11 @@ class LatticeView(QGraphicsScene):
         point = QPointF(point)
         if not self._edit_cell_constrained:
             return point
-        (a1x, a1y), (a2x, a2y) = self._cell_vectors
-        det = a1x * a2y - a1y * a2x
-        if abs(det) < 1e-12:
+        fractional = self._scene_to_local(point)
+        u_v = self._local_to_fractional(*fractional)
+        if u_v is None:
             return point
-        anchor_x, anchor_y = self._edit_anchor_offset
-        x = point.x() - anchor_x
-        y = -point.y() - anchor_y
-        u = (x * a2y - y * a2x) / det
-        v = (a1x * y - a1y * x) / det
+        u, v = u_v
         # Keep the upper edge strictly inside: validation uses u/v < 1.
         # Keep a visible decimal margin as well as a mathematical one.  The
         # coordinate table intentionally displays eight significant digits;
@@ -1114,10 +1154,7 @@ class LatticeView(QGraphicsScene):
         cv = min(1.0 - eps, max(0.0, v))
         if abs(cu - u) <= 1e-15 and abs(cv - v) <= 1e-15:
             return point
-        return QPointF(
-            anchor_x + cu * a1x + cv * a2x,
-            -(anchor_y + cu * a1y + cv * a2y),
-        )
+        return self._local_to_scene(*self._fractional_to_local(cu, cv))
 
     def _edit_collision_tolerance(self) -> float:
         """Return the minimum visual clearance between editable sites."""
@@ -1128,14 +1165,10 @@ class LatticeView(QGraphicsScene):
         return max(0.03, min(0.12, max(0.03, self.snap_step * 0.8)))
 
     def _edit_live_positions(self, skip_index: int | None = None):
-        anchor_x, anchor_y = self._edit_anchor_offset
         for owner, (x, y, _sub) in enumerate(self._edit_sites):
             if skip_index is not None and owner == int(skip_index):
                 continue
-            yield owner, QPointF(
-                float(x) + anchor_x,
-                -float(y) - anchor_y,
-            )
+            yield owner, self._local_to_scene(float(x), float(y))
 
     def _edit_position_is_clear(self, index: int, point: QPointF,
                                 tolerance: float | None = None) -> bool:
@@ -1243,11 +1276,9 @@ class LatticeView(QGraphicsScene):
         # for a slanted disk/hexagon cell is generally not a multiple of the
         # grid (e.g. sqrt(3)/2); snapping in global scene coordinates would
         # silently write those fractional offsets back into the site table.
-        anchor_x, anchor_y = self._edit_anchor_offset
-        local_x = float(point.x() - anchor_x)
-        local_y = float(-point.y() - anchor_y)
+        local_x, local_y = self._scene_to_local(point)
         snapped_x, snapped_y = self._snap_local_point(local_x, local_y, step)
-        grid = QPointF(anchor_x + snapped_x, -(anchor_y + snapped_y))
+        grid = self._local_to_scene(snapped_x, snapped_y)
         tolerance = max(0.08, step * 0.55)
         collision_tolerance = max(0.03, min(0.12, tolerance * 0.8))
         # Snap as a complete 2-D point.  The previous independent x/y
@@ -1261,18 +1292,18 @@ class LatticeView(QGraphicsScene):
         # this keeps the helper useful for previews and preserves its 2-D
         # snapping semantics outside the interactive editor.
         live_positions = [
-            (QPointF(float(x) + anchor_x, -float(y) - anchor_y), site_index)
+            (self._local_to_scene(float(x), float(y)), site_index)
             for site_index, (x, y, _s) in enumerate(self._edit_sites)
         ]
         current_candidates: list[tuple[QPointF, int]] = []
         for site_index, (x, y, _s) in enumerate(self._edit_sites):
             if not interactive_drag or site_index == index:
                 current_candidates.append(
-                    (QPointF(float(x) + anchor_x, -float(y) - anchor_y), site_index)
+                    (self._local_to_scene(float(x), float(y)), site_index)
                 )
         candidates: list[QPointF] = [candidate for candidate, _owner in current_candidates]
         for ref_index, (x, y) in enumerate(self._snap_reference_sites):
-            candidate = QPointF(x + anchor_x, -y - anchor_y)
+            candidate = self._local_to_scene(float(x), float(y))
             if interactive_drag:
                 # A baseline target is useful for restoring a moved site, but
                 # not if that target is already occupied by a different live
@@ -1496,9 +1527,7 @@ class LatticeView(QGraphicsScene):
         and a small duplicate/overlap guard before emitting the signal.
         """
         scene_point = QPointF(scene_point)
-        anchor_x, anchor_y = self._edit_anchor_offset
-        x = float(scene_point.x() - anchor_x)
-        y = float(-scene_point.y() - anchor_y)
+        x, y = self._scene_to_local(scene_point)
         if self.snap_enabled:
             step = max(0.001, float(self.snap_step))
             x, y = self._snap_local_point(x, y, step)
@@ -1506,20 +1535,17 @@ class LatticeView(QGraphicsScene):
         # A site table stores local primitive-cell coordinates.  Reject an
         # invalid click with an actionable status message instead of silently
         # clamping it to an edge or letting the later Hamiltonian rebuild fail.
-        if self._edit_cell_constrained:
-            (a1x, a1y), (a2x, a2y) = self._cell_vectors
-            det = a1x * a2y - a1y * a2x
-            if abs(det) >= 1e-12:
-                u = (x * a2y - y * a2x) / det
-                v = (a1x * y - a1y * x) / det
-                if not (-1e-9 <= u < 1.0 - 1e-9
-                        and -1e-9 <= v < 1.0 - 1e-9):
-                    self.editSelectionChanged.emit(
-                        "添加失败：请在蓝色原始元胞范围内点击；元胞外坐标不会写入模型"
-                    )
-                    return
+        fractional = self._local_to_fractional(x, y)
+        if fractional is not None:
+            u, v = fractional
+            if not (-1e-9 <= u < 1.0 - 1e-9
+                    and -1e-9 <= v < 1.0 - 1e-9):
+                self.editSelectionChanged.emit(
+                    "添加失败：请在蓝色原始元胞范围内点击；元胞外坐标不会写入模型"
+                )
+                return
 
-        candidate = QPointF(anchor_x + x, -(anchor_y + y))
+        candidate = self._local_to_scene(x, y)
         clearance = self._edit_collision_tolerance()
         if any(
             math.hypot(candidate.x() - live.x(), candidate.y() - live.y())

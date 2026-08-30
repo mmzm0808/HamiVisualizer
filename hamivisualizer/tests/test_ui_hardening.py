@@ -3053,6 +3053,54 @@ def test_oblique_snap_grid_and_rounding_share_bravais_fractional_coordinates():
     assert v == pytest.approx(round(v * n2) / n2, abs=1e-8)
 
 
+def test_edit_coordinate_transforms_round_trip_with_offset_primitive_cell():
+    """网格、拖动约束和加点必须共享同一组原点/y 轴变换。"""
+    QApplication.instance() or QApplication([])
+    scene = LatticeView()
+    a1 = (2.0, 0.0)
+    a2 = (0.75, 1.5)
+    scene.set_edit_context(
+        [(0.0, 0.0, "A"), (0.5, 0.5, "B")],
+        cell_vectors=(a1, a2),
+        anchor_offset=(3.25, -1.75),
+    )
+    for local in ((0.0, 0.0), (0.4, 0.7), (1.2, 0.2)):
+        scene_point = scene._local_to_scene(*local)
+        assert scene._scene_to_local(scene_point) == pytest.approx(local)
+        fractional = scene._local_to_fractional(*local)
+        assert fractional is not None
+        rebuilt = scene._fractional_to_local(*fractional)
+        assert rebuilt == pytest.approx(local)
+
+
+def test_edit_grid_dot_is_exactly_reachable_by_shared_snap_transform():
+    """每个可见背景点都应是吸附算法真正会返回的点。"""
+    QApplication.instance() or QApplication([])
+    scene = LatticeView()
+    a1 = (2.0, 0.0)
+    a2 = (0.75, 1.5)
+    anchor = (3.25, -1.75)
+    scene.set_edit_context(
+        [(0.0, 0.0, "A"), (0.5, 0.5, "B")],
+        cell_vectors=(a1, a2), snap_step=0.25,
+        anchor_offset=anchor,
+    )
+    scene.set_edit_mode(True)
+    scene.set_data(LatticeSceneData(
+        sites=(
+            (anchor[0], anchor[1], "1", "A"),
+            (anchor[0] + 0.5, anchor[1] + 0.5, "2", "B"),
+        ),
+    ))
+    dots = [item for item in scene.items()
+            if item.data(0) == "snap-grid-node"
+            and item.data(1) == "bravais-grid"]
+    assert dots
+    for dot in dots:
+        local = scene._scene_to_local(dot.sceneBoundingRect().center())
+        assert scene._snap_local_point(*local, scene.snap_step) == pytest.approx(local)
+
+
 @pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
 def test_all_default_basis_sites_land_on_visible_bravais_snap_targets(template_name):
     """每个默认模型的真实基元格点都应落在同一组可吸附背景点上。"""

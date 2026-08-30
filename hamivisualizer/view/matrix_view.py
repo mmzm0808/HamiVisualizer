@@ -288,6 +288,31 @@ class MatrixView(QGraphicsScene):
             .replace("ω", r"\omega")
         )
 
+    def matrix_latex(self, *, max_elements: int = 4096) -> str:
+        """Return the current matrix as a paste-ready LaTeX environment.
+
+        The on-canvas matrix intentionally has no enclosing bracket layer;
+        this export is a document-oriented artifact, so ``bmatrix`` supplies
+        the conventional delimiters expected in a paper.  Each entry goes
+        through :meth:`cell_latex`, keeping symbolic Bloch factors and the
+        numeric/smart formatter identical to what the user inspected.
+        """
+        if self._data is None:
+            raise ValueError("矩阵尚未生成")
+        n = int(self._data.n)
+        if n <= 0:
+            raise ValueError("矩阵必须是非空方阵")
+        if n * n > int(max_elements):
+            raise ValueError(
+                f"矩阵为 {n}×{n}，超过一次复制的安全上限 {int(max_elements)} 个元素；"
+                "请减少格点数后再复制。"
+            )
+        rows = []
+        for i in range(n):
+            values = [self.cell_latex(i, j) for j in range(n)]
+            rows.append(" & ".join(values))
+        return "\\begin{bmatrix}\n" + " \\\\\n".join(rows) + "\n\\end{bmatrix}"
+
     def set_zoom_level(self, scale: float, source=None) -> None:
         """按视口缩放级别切换文字层。
 

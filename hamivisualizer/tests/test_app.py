@@ -80,6 +80,26 @@ def test_vector_export_writes_svg_and_pdf(tmp_path, monkeypatch):
     win.close()
 
 
+def test_matrix_latex_copy_uses_current_symbolic_cells_and_bounds_size():
+    """Matrix LaTeX copy mirrors the inspected cells and has a safe bound."""
+    _app, win, ctrl = _mk()
+    ctrl.load_preset("NP")
+    data = win.matrix_scene._data
+    assert data is not None
+    latex = win.matrix_scene.matrix_latex()
+    assert latex.startswith("\\begin{bmatrix}\n")
+    assert latex.endswith("\n\\end{bmatrix}")
+    assert latex.count("\\\\") == data.n - 1
+    assert "e^{i\\phi}" in latex
+    assert "e^{-ik_{x}}" in latex
+    win.action_copy_matrix_latex.trigger()
+    assert QApplication.clipboard().text() == latex
+    assert "矩阵 LaTeX" in win.statusBar().currentMessage()
+
+    with pytest.raises(ValueError, match="安全上限"):
+        win.matrix_scene.matrix_latex(max_elements=data.n * data.n - 1)
+
+
 def test_load_sc_obc():
     _app, win, ctrl = _mk()
     ctrl.load_preset("SC")

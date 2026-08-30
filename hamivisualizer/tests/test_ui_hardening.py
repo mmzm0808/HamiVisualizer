@@ -164,6 +164,7 @@ def test_fractional_index_is_an_error_and_marks_results_stale():
     assert not win.action_export.isEnabled()
     assert not win.action_export_svg.isEnabled()
     assert not win.action_export_pdf.isEnabled()
+    assert not win.action_copy_matrix_latex.isEnabled()
 
 
 def test_input_waiting_message_stays_in_status_bar():

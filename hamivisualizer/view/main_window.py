@@ -369,6 +369,8 @@ class MainWindow(QMainWindow):
             self.result_banner.setVisible(False)
             self.result_banner.setText("")
             self._set_export_actions_enabled(True)
+            if hasattr(self, "action_copy_matrix_latex"):
+                self.action_copy_matrix_latex.setEnabled(self.matrix_scene._data is not None)
             return
         theme = self._theme()
         if state == "busy":
@@ -378,6 +380,8 @@ class MainWindow(QMainWindow):
             )
             self.result_banner.setText(message or "正在计算…")
             self._set_export_actions_enabled(False)
+            if hasattr(self, "action_copy_matrix_latex"):
+                self.action_copy_matrix_latex.setEnabled(False)
         else:
             self.result_banner.setStyleSheet(
                 f"background:{theme.banner_err_bg};color:{theme.banner_err_text};"
@@ -385,6 +389,8 @@ class MainWindow(QMainWindow):
             )
             self.result_banner.setText(message or "当前视图已过期，请修正输入。")
             self._set_export_actions_enabled(False)
+            if hasattr(self, "action_copy_matrix_latex"):
+                self.action_copy_matrix_latex.setEnabled(False)
         self.result_banner.setVisible(bool(show_banner))
 
     def flash_status(self, message: str, duration_ms: int = 1800):
@@ -477,6 +483,21 @@ class MainWindow(QMainWindow):
             return
         clipboard.setText(text)
         self.statusBar().showMessage(f"已复制：{index_label} = {display_value}", 2600)
+
+    def _copy_matrix_latex(self):
+        """Copy the complete current matrix in a bounded LaTeX form."""
+        try:
+            latex = self.matrix_scene.matrix_latex()
+        except (IndexError, ValueError) as exc:
+            self.flash_status(str(exc), 2600)
+            return
+        clipboard = QApplication.clipboard()
+        if clipboard is None:
+            self.flash_status("当前环境不支持剪贴板", 2200)
+            return
+        clipboard.setText(latex)
+        n = int(self.matrix_scene._data.n) if self.matrix_scene._data is not None else 0
+        self.statusBar().showMessage(f"已复制当前 {n}×{n} 矩阵 LaTeX", 2600)
 
     def _relayout_lattice_edit_toolbar(self):
         """Reflow lattice-edit actions so UI scaling never widens the window.
@@ -812,6 +833,13 @@ class MainWindow(QMainWindow):
         # so bind it when the menu is built rather than only when the
         # multi-model workspace layer is enabled.
         self.action_copy_matrix_cell.triggered.connect(self._copy_selected_matrix_cell)
+        self.action_copy_matrix_latex = em.addAction("复制当前矩阵 LaTeX")
+        self.action_copy_matrix_latex.setToolTip(
+            "复制当前矩阵的 bmatrix LaTeX 源码；结果过期或矩阵过大时不可用。"
+        )
+        self.action_copy_matrix_latex.setEnabled(False)
+        self.action_copy_matrix_latex.setShortcut(QKeySequence("Ctrl+Shift+L"))
+        self.action_copy_matrix_latex.triggered.connect(self._copy_matrix_latex)
         self.action_rename = em.addAction("重命名当前模型…")
         self.action_preferences = em.addAction("偏好设置…")
         self.action_undo.setEnabled(False)

@@ -86,6 +86,22 @@ def test_evidence_renderer_help_is_renderable():
     assert "1.0（100%）" in result.stdout
 
 
+def test_editor_scale_audit_help_is_side_effect_free():
+    """审计脚本的 --help 只打印说明，不启动整套 Qt 截图任务。"""
+    repo = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, str(repo / "tools" / "audit_editor_scales.py"), "--help"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "100%" in result.stdout
+    assert "usage:" in result.stdout
+
+
 def _window():
     app = QApplication.instance() or QApplication([])
     win = MainWindow()

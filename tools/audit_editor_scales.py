@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import argparse
 import math
 import os
 from pathlib import Path
@@ -94,6 +95,17 @@ def _evidence_path(stem: str, theme: str, scale: float) -> Path | None:
 
 
 def main() -> None:
+    # Keep the audit's output contract intentionally fixed inside the project,
+    # but still provide a conventional, side-effect-free ``--help`` page.
+    # Without parsing here, passing ``--help`` would launch the full 88-case
+    # Qt audit and surprise users with minutes of work and screenshots.
+    parser = argparse.ArgumentParser(
+        description=(
+            "审计全部默认模型的编辑器几何；80/100/150/180% 只做检查，"
+            "仅保存 100% 证据到项目 .codex-artifacts。"
+        ),
+    )
+    parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     app = QApplication.instance() or QApplication([])
     app.setStyle(QStyleFactory.create("Fusion"))

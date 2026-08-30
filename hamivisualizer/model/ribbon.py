@@ -248,8 +248,17 @@ class RibbonHamiltonian:
         """符号 kx → 符号 H(kx) 矩阵."""
         import sympy as sp
 
+        # ``build_ribbon`` may retain immutable SymPy blocks when a model is
+        # assembled symbolically.  Convert explicitly to a mutable matrix
+        # before adding long-range entries in-place.
+        H0 = sp.Matrix(self.H0)
+        H1 = sp.Matrix(self.H1)
         ph = sp.exp(sp.I * kx_sym)
-        H = self.H0 + ph * self.H1 + sp.conjugate(self.H1.T) * sp.exp(-sp.I * kx_sym)
+        H = sp.MutableDenseMatrix(H0)
+        base = ph * H1 + sp.conjugate(H1.T) * sp.exp(-sp.I * kx_sym)
+        for i in range(H.rows):
+            for j in range(H.cols):
+                H[i, j] = H[i, j] + base[i, j]
         for (cs, i, j), v in self.extra.items():
             phn = sp.exp(sp.I * cs * kx_sym)
             H[i, j] += v * phn

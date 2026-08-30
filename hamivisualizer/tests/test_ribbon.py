@@ -1,6 +1,7 @@
 """fold_x / build_basis 单元测试 (对拍 MATLAB count_sites 格点计数)."""
 
 import numpy as np
+import sympy as sp
 
 from hamivisualizer.model.presets import NP, SC
 from hamivisualizer.model.ribbon import RibbonSpec, build_basis, fold_x
@@ -173,3 +174,30 @@ def test_long_range_x_harmonic_matches_analytic_chain_dispersion():
         np.testing.assert_allclose(
             result.to_semi(kx)[0, 0], expected, atol=1e-12,
         )
+
+
+def test_symbolic_long_range_harmonic_matches_ribbon_symmetry_rule():
+    """符号长程项不应把未声明为实数的 kx 变成 conjugate(kx)。"""
+    from hamivisualizer.model.boundary import Boundary, BoundaryKind
+    from hamivisualizer.model.hamiltonian import HamiltonianBuilder
+    from hamivisualizer.model.hopping import HoppingTerm
+    from hamivisualizer.model.lattice import Lattice, Site
+    from hamivisualizer.model.ribbon import RibbonHamiltonian
+
+    amplitude = sp.Symbol("t", real=True)
+    lattice = Lattice([Site(0, 0.0, 0.0, "A")], Lx=1.0, Ly=1.0)
+    result = HamiltonianBuilder(
+        lattice,
+        [
+            HoppingTerm("t1", 0, 0, (1, 0), amplitude),
+            HoppingTerm("t2", 0, 0, (2, 0), amplitude),
+        ],
+        Boundary(BoundaryKind.SEMI, NY=1),
+    ).build()
+    kx = sp.Symbol("q")  # deliberately no real=True assumption
+    actual = result.to_semi(kx)
+    expected = RibbonHamiltonian(
+        result.blocks["H0"], result.blocks["H1"], result.extra,
+    ).H_sym(kx)
+    assert sp.simplify(actual[0, 0] - expected[0, 0]) == 0
+    assert not actual[0, 0].has(sp.conjugate(kx))

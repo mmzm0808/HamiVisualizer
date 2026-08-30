@@ -96,11 +96,19 @@ class HResult:
             H0 = H0 if isinstance(H0, sp.MatrixBase) else sp.Matrix(H0)
             H1 = H1 if isinstance(H1, sp.MatrixBase) else sp.Matrix(H1)
             phase = sp.exp(sp.I * kx)
-            matrix = H0 + phase * H1 + sp.conjugate(phase) * H1.T.conjugate()
+            # Keep the Bloch convention explicit.  ``conjugate(exp(I*kx))``
+            # is only equivalent when ``kx`` is declared real; callers that
+            # request a symbolic matrix often intentionally leave that
+            # assumption open for later substitution.
+            matrix = H0 + phase * H1 + sp.exp(-sp.I * kx) * H1.T.conjugate()
             for (distance, i, j), value in self.extra.items():
                 harmonic = sp.exp(sp.I * distance * kx)
                 matrix[i, j] += value * harmonic
-                matrix[j, i] += sp.conjugate(value * harmonic)
+                # Hermitian conjugation applies to the coefficient and to the
+                # Bloch phase separately.  Conjugating the product would also
+                # turn an unconstrained symbolic ``kx`` into ``conjugate(kx)``
+                # and make this path disagree with RibbonHamiltonian.H_sym.
+                matrix[j, i] += sp.conjugate(value) * sp.exp(-sp.I * distance * kx)
             return matrix
         ph = np.exp(1j * kx)
         matrix = H0 + ph * H1 + np.conj(ph) * H1.conj().T

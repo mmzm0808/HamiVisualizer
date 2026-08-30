@@ -664,6 +664,7 @@ class LatticeView(QGraphicsScene):
         radius = min(0.035, max(0.012, render_step * 0.10))
         x_start = math.ceil((rect.left() - anchor_x) / render_step)
         x_stop = math.floor((rect.right() - anchor_x) / render_step)
+        regular_centers: list[tuple[float, float]] = []
         if self._edit_cell_constrained:
             (a1x, a1y), (a2x, a2y) = self._cell_vectors
             cell_det = a1x * a2y - a1y * a2x
@@ -688,6 +689,7 @@ class LatticeView(QGraphicsScene):
                         if not (-1e-9 <= u < 1.0 - 1e-9
                                 and -1e-9 <= v < 1.0 - 1e-9):
                             continue
+                regular_centers.append((x, y))
                 item = QGraphicsEllipseItem(x - radius, y - radius,
                                             2 * radius, 2 * radius)
                 item.setBrush(QBrush(color))
@@ -697,6 +699,43 @@ class LatticeView(QGraphicsScene):
                 item.setData(0, "snap-grid-node")
                 self.addItem(item)
                 self._grid_items.append(item)
+
+        # The Cartesian fallback grid is intentionally simple and predictable
+        # for custom rectangular cells.  Oblique presets (honeycomb, Kagome,
+        # triangular) contain basis sites such as ``(sqrt(3)/2, 1/2)`` that
+        # are not multiples of a decimal Cartesian interval.  Showing only
+        # the fallback dots therefore makes a real lattice site look as if it
+        # floats between targets, even though the magnetic snap code already
+        # knows the exact basis coordinate.  Add a quiet, non-interactive
+        # halo at each current editable site that is not already on a regular
+        # dot.  It is a visual snap target, not a second site and never enters
+        # hit testing; the editable circle remains on top of it.
+        if self._edit_cell_constrained and self._edit_sites:
+            halo_color = QColor(72, 105, 132, 150) if dark else QColor(82, 113, 137, 135)
+            halo_pen = QPen(halo_color, 0.9)
+            halo_pen.setCosmetic(True)
+            halo_radius = max(0.215, self._site_radius * 1.1 + 0.025)
+            for sx, sy, _sub in self._edit_sites:
+                tx = float(sx) + anchor_x
+                ty = -float(sy) - anchor_y
+                nearest = min(
+                    (math.hypot(tx - gx, ty - gy) for gx, gy in regular_centers),
+                    default=float("inf"),
+                )
+                if nearest <= max(1e-8, render_step * 0.04):
+                    continue
+                halo = QGraphicsEllipseItem(
+                    tx - halo_radius, ty - halo_radius,
+                    2 * halo_radius, 2 * halo_radius,
+                )
+                halo.setBrush(Qt.NoBrush)
+                halo.setPen(halo_pen)
+                halo.setZValue(-0.8)
+                halo.setAcceptedMouseButtons(Qt.NoButton)
+                halo.setData(0, "snap-grid-node")
+                halo.setData(1, "site-anchor")
+                self.addItem(halo)
+                self._grid_items.append(halo)
 
     def _redraw_snap_grid(self) -> None:
         """Refresh only grid dots, preserving selection and editor focus."""
@@ -1565,8 +1604,18 @@ class LatticeView(QGraphicsScene):
         # than the nearest shell.  Small scenes keep every authored edge
         # visible; dense scenes retain the progressive-disclosure behaviour.
         compact_scene = len(self._edit_sites) == 3 and len(data.edges) <= 12
+        # A relation entered through the table or an explicit add tool is a
+        # deliberate user action.  Do not let the compact preset detail layer
+        # hide it merely because its geometric length is beyond the nearest
+        # shell; otherwise the row is present in the model but appears to
+        # have vanished from the canvas.  The flag is transient UI metadata
+        # and never changes the physical shell classification.
+        user_added_hop = any(
+            bool(hop.get("_user_added")) for hop in self._edit_hops
+        )
         show_edit_details = (
             (not self.edit_mode) or self._show_edit_details or compact_scene
+            or user_added_hop
         )
         for i, j, kind in data.edges:
             if (kind == "NN" and not self._show_nn) or (
@@ -1821,14 +1870,23 @@ class LatticeView(QGraphicsScene):
         # Hidden detail bonds must not leave invisible mouse targets above
         # nearest-neighbour lines.  That used to make a visible red bond
         # unexpectedly open a distant NNN coefficient in dense Kagome views.
+        user_added_hop = any(
+            bool(hop.get("_user_added")) for hop in editor_hops
+        )
         guide_rows = (
             rows if self._show_edit_details or self._show_all_hop_editors
+            or user_added_hop
             or (len(self._edit_sites) == 3
                 and self._data is not None and len(self._data.edges) <= 12)
             else self._primary_editable_rows(editor_hops)
         )
         if not self._show_edit_details and not self._show_all_hop_editors:
             visible_rows &= guide_rows
+        if user_added_hop:
+            visible_rows |= {
+                int(hop.get("row", -1)) for hop in editor_hops
+                if hop.get("_user_added")
+            }
 
         (a1x, a1y), (a2x, a2y) = self._cell_vectors
         # Keep the physical translation of the editable cell immutable for

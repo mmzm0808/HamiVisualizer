@@ -75,6 +75,11 @@ PARAM_COLS = ["参数", "数值", "滑块"]
 # stored in ``Qt.UserRole``.  Qt may render long coordinates as an ellipsis at
 # 150–180% UI scale; this role lets the tooltip always expose the exact value.
 RAW_VALUE_ROLE = Qt.UserRole + 100
+# Transient marker for rows authored through the interactive add tools.  It is
+# deliberately not part of the persisted model schema; it lets the canvas
+# keep a newly added long-range bond visible even when the compact edit layer
+# is hiding the preset's dense NNN background.
+HOP_USER_ADDED_ROLE = Qt.UserRole + 101
 
 # 参数滑块配置: name → (int_min, int_max, scale)  value = 滑块整数 × scale
 # φ 的数值列按 φ/π 显示 (MATLAB §2.1), scale 仍以弧度计。
@@ -1553,6 +1558,10 @@ class ControlPanel(QWidget):
                 "phase_mode": phase_mode,
                 "phase": vals[7].strip() or "0",
                 "phase_sign": sign,
+                "_user_added": bool(
+                    self.hop_table.item(r, 0)
+                    and self.hop_table.item(r, 0).data(HOP_USER_ADDED_ROLE)
+                ),
             }))
         return rows
 
@@ -1578,6 +1587,15 @@ class ControlPanel(QWidget):
 
     def _hop_cell_changed(self, *_args):
         """Keep the compact relation summary useful while a row is edited."""
+        row = int(_args[0]) if _args else -1
+        if 0 <= row < self.hop_table.rowCount():
+            item = self.hop_table.item(row, 0)
+            if item is not None:
+                # A row manually filled into the table is just as much a new
+                # user-authored relation as one created by the add dialog.
+                # Loading a document blocks this signal, so preset rows keep
+                # the default (unmarked) compact rendering.
+                item.setData(HOP_USER_ADDED_ROLE, True)
         self._update_hop_relation_tooltips()
         self._update_hop_relation_hint()
         self._emit_changed()
@@ -2116,6 +2134,10 @@ class ControlPanel(QWidget):
         table.insertRow(r)
         for c, d in enumerate(defaults):
             table.setItem(r, c, self._table_item(d))
+        if table is self.hop_table:
+            first = table.item(r, 0)
+            if first is not None:
+                first.setData(HOP_USER_ADDED_ROLE, True)
         table.blockSignals(False)
         if table is self.hop_table:
             self._update_hop_relation_tooltips()

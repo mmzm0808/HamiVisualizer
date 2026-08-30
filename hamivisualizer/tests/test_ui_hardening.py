@@ -2924,6 +2924,60 @@ def test_oblique_snap_grid_contains_only_real_bravais_cell_targets(template_name
         assert -1e-8 <= v < 1.0 + 1e-8
 
 
+def test_oblique_edit_sites_have_visible_snap_targets_at_their_exact_positions():
+    """斜晶格的实际格点必须落在可见网格目标上，而不是悬空。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "蜂窝", boundary_kind="obc", shape="rectangle",
+        connectivity="最近邻", nx=4, ny=4,
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    scene = win.lattice_scene
+    grid = [item for item in scene.items()
+            if item.data(0) == "snap-grid-node"]
+    assert grid
+    centers = [item.sceneBoundingRect().center() for item in grid]
+    for site in scene._edit_items.values():
+        target = site.scenePos()
+        # Either a Cartesian target (for A) or the exact-site halo (for B)
+        # must sit at the same scene coordinate.  A loose numerical tolerance
+        # covers QGraphicsEllipseItem's bounding-rect quantization only.
+        assert min(
+            math.hypot(target.x() - center.x(), target.y() - center.y())
+            for center in centers
+        ) <= 1e-6
+
+
+def test_user_added_long_range_hop_stays_visible_in_compact_edit_layer():
+    """新加的长程跃迁不能因默认降噪而从画布上消失。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "蜂窝", boundary_kind="semi", connectivity="最近邻", nx=4, ny=3,
+    ))
+    win.lattice_mode_btn.setChecked(True)
+    QApplication.processEvents()
+    # Model-facing endpoints are zero-based; append_hop converts them once
+    # into the human-facing one-based table and marks the row as authored.
+    win.panel.append_hop(
+        ["t", 0, 1, 2, 0, "-t", "none", "0", 1],
+        reveal_relation=True,
+    )
+    ctrl.rebuild()
+    QApplication.processEvents()
+    scene = win.lattice_scene
+    assert any(item.data(0) == "ghost-edge-nnn" for item in scene.items())
+    assert any(
+        item.data(0) == "hopping-editor"
+        and int(item.data(1)) == len(win.panel.get_hop_rows()) - 1
+        for item in scene.items()
+    )
+
+
 def test_site_creation_respects_snap_toggle_and_rejects_invalid_or_duplicate_points():
     """添加格点不应绕过吸附开关、元胞边界或重复坐标校验。"""
     QApplication.instance() or QApplication([])

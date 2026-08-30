@@ -1503,7 +1503,7 @@ def test_edit_strength_editors_are_offset_from_bond_centers():
 
 
 def test_edit_strength_rail_keeps_multiple_bonds_on_the_right_without_drift():
-    """Each coefficient field shares a right rail and keeps its true bond anchor."""
+    """One rendered line gets one field; the table still keeps duplicate rows."""
     _app, win, ctrl = _window()
     document = template_document(
         "空白自定义", boundary_kind="semi", connectivity="仅格点",
@@ -1530,8 +1530,9 @@ def test_edit_strength_rail_keeps_multiple_bonds_on_the_right_without_drift():
     QApplication.processEvents()
 
     scene = win.lattice_scene
-    assert len(scene._edit_proxies) == 2
-    assert len(scene._edit_leader_links) == 2
+    assert len(scene._edit_proxies) == 1
+    assert len(scene._edit_leader_links) == 1
+    assert scene._edit_proxies[0].widget().toolTip().endswith("等价表格行：1, 2")
     # Both fields are in one stable right-hand rail; they must not drift by
     # inheriting the preceding hop's cell anchor.
     assert len({round(proxy.pos().x(), 6) for proxy in scene._edit_proxies}) == 1
@@ -2523,7 +2524,7 @@ def test_all_default_templates_keep_edit_layer_and_detail_layer_consistent():
         QApplication.processEvents()
         assert scene.show_edit_details
         assert {guide.row for guide in scene._edit_guides} == {
-            int(hop["row"]) for hop in editable
+            int(hop["row"]) for hop in scene._editor_representative_hops(editable)
         }, template_name
         if len(editable) > len(primary):
             assert any(item.data(0) == "physical-edge-nnn" for item in scene.items()), template_name
@@ -2820,6 +2821,66 @@ def test_lattice_labels_scale_with_view_and_sites_stay_compact():
     assert labels
     assert all(not (item.flags() & QGraphicsItem.ItemIgnoresTransformations)
                for item in labels)
+
+
+def test_edit_canvas_draws_snap_grid_nodes_and_toolbar_spacing_updates_them():
+    """编辑态背景网格与吸附间距一致，改间距立即刷新且不改拓扑。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "空白自定义", boundary_kind="semi", connectivity="最近邻",
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    QApplication.processEvents()
+    scene = win.lattice_scene
+    assert scene.grid_visible
+    dots = [item for item in scene.items()
+            if item.data(0) == "snap-grid-node"]
+    assert dots and len(dots) <= 1800
+    before = len(dots)
+    win.lattice_snap_step_spin.setValue(0.5)
+    QApplication.processEvents()
+    assert scene.snap_step == pytest.approx(0.5)
+    after = [item for item in scene.items()
+             if item.data(0) == "snap-grid-node"]
+    assert after and len(after) < before
+    win.lattice_grid_btn.setChecked(False)
+    QApplication.processEvents()
+    assert not scene.grid_visible
+    assert not any(item.data(0) == "snap-grid-node" for item in scene.items())
+    win.lattice_grid_btn.setChecked(True)
+    assert scene.grid_visible
+    assert any(item.data(0) == "snap-grid-node" for item in scene.items())
+
+
+def test_small_custom_editor_keeps_longer_authored_bond_visible():
+    """小型自定义模型不因最近邻渐进显示而丢第三条边。"""
+    _app, win, ctrl = _window()
+    document = template_document(
+        "空白自定义", boundary_kind="semi", connectivity="仅格点",
+    )
+    document["sites"] = [
+        {"x": 0.2, "y": 0.0, "sublattice": "A"},
+        {"x": 0.6, "y": 0.4, "sublattice": "A"},
+        {"x": 0.2, "y": 0.4, "sublattice": "A"},
+    ]
+    document["hops"] = [
+        {"name": "t", "from_site": 0, "to_site": 1, "off_x": 0,
+         "off_y": 0, "amplitude": "-t", "phase": "0",
+         "phase_mode": "none", "phase_sign": 1},
+        {"name": "t", "from_site": 1, "to_site": 2, "off_x": 0,
+         "off_y": 0, "amplitude": "-t", "phase": "0",
+         "phase_mode": "none", "phase_sign": 1},
+        {"name": "t", "from_site": 2, "to_site": 0, "off_x": 0,
+         "off_y": 0, "amplitude": "-t", "phase": "0",
+         "phase_mode": "none", "phase_sign": 1},
+    ]
+    ctrl.apply_document(document)
+    win.lattice_mode_btn.setChecked(True)
+    QApplication.processEvents()
+    assert sum(item.data(0) == "physical-edge-nnn" for item in win.lattice_scene.items()) >= 1
 
 
 def test_wavefunction_markers_follow_site_spacing_without_covering_neighbors():

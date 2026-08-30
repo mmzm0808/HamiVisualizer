@@ -349,7 +349,10 @@ class ViewController(QObject):
             calculation_mode if calculation_mode in {"automatic", "manual"}
             else "automatic"
         )
-        self.window.lattice_scene.snap_step = max(0.001, float(snap_step))
+        # Keep the visible edit grid and the magnetic snapper on the same
+        # interval when preferences are applied while an edit session is
+        # open.  The view method redraws only the grid layer.
+        self.window.lattice_scene.set_snap_step(max(0.001, float(snap_step)))
         self.window.lattice_scene.set_snap_enabled(snap_enabled)
 
     def cancel_calculation(self):

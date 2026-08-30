@@ -496,6 +496,11 @@ class LatticeView(QGraphicsScene):
         self._edit_proxies: list[QGraphicsProxyWidget] = []
         self._edit_guides: list[QGraphicsLineItem] = []
         self._edit_leaders: list[QGraphicsLineItem] = []
+        # Magnetic edit-grid dots are a presentation layer, not lattice
+        # sites.  Keep explicit references so changing the toolbar spacing
+        # can redraw only this layer without rebuilding editors or topology.
+        self._grid_items: list[QGraphicsEllipseItem] = []
+        self._grid_visible = True
         # Two-segment dashed leaders connect each displaced editor to its bond
         # midpoint. Keep this separate from the public anchor tuples so
         # existing callers continue to receive (proxy, x, y).
@@ -543,6 +548,94 @@ class LatticeView(QGraphicsScene):
     def set_snap_enabled(self, enabled: bool):
         """Enable/disable magnetic snapping without rebuilding the model."""
         self.snap_enabled = bool(enabled)
+
+    @property
+    def grid_visible(self) -> bool:
+        """Whether the editable canvas shows magnetic grid nodes."""
+        return self._grid_visible
+
+    def set_grid_visible(self, enabled: bool) -> None:
+        """Show/hide the edit-grid dots without changing snap behaviour."""
+        enabled = bool(enabled)
+        if enabled == self._grid_visible:
+            return
+        self._grid_visible = enabled
+        self._redraw_snap_grid()
+
+    def set_snap_step(self, step: float) -> None:
+        """Update snap spacing and redraw the visible edit grid immediately."""
+        try:
+            value = float(step)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(value):
+            return
+        self.snap_step = max(0.001, min(10.0, value))
+        self._redraw_snap_grid()
+
+    def _clear_snap_grid(self) -> None:
+        for item in self._grid_items:
+            self.removeItem(item)
+        self._grid_items.clear()
+
+    def _draw_snap_grid(self) -> None:
+        """Draw quiet, clickable-looking snap targets behind the lattice.
+
+        The points share the same Cartesian origin and interval used by
+        :meth:`snap_position`, so a user can see exactly where a dragged site
+        will land.  Very large scenes coarsen *only the decoration* to keep
+        Qt responsive; the actual snap interval remains unchanged.
+        """
+        self._clear_snap_grid()
+        if not self.edit_mode or not self._grid_visible or self._data is None:
+            return
+        rect = self.sceneRect()
+        if not rect.isValid() or rect.isEmpty():
+            return
+        step = max(0.001, float(self.snap_step))
+        anchor_x, anchor_y = self._edit_anchor_offset
+        nx = int(math.floor((rect.right() - anchor_x) / step)
+                 - math.ceil((rect.left() - anchor_x) / step) + 1)
+        # Scene y is inverted relative to physical y.  The interval below is
+        # nevertheless identical to snap_position's ``point.y + anchor_y``.
+        y_min = math.ceil((rect.top() + anchor_y) / step)
+        y_max = math.floor((rect.bottom() + anchor_y) / step)
+        ny = max(0, y_max - y_min + 1)
+        render_step = step
+        point_count = max(0, nx) * ny
+        if point_count > 1800:
+            multiplier = int(math.ceil(math.sqrt(point_count / 1800.0)))
+            render_step = step * max(1, multiplier)
+            nx = int(math.floor((rect.right() - anchor_x) / render_step)
+                     - math.ceil((rect.left() - anchor_x) / render_step) + 1)
+            y_min = math.ceil((rect.top() + anchor_y) / render_step)
+            y_max = math.floor((rect.bottom() + anchor_y) / render_step)
+            ny = max(0, y_max - y_min + 1)
+        if nx <= 0 or ny <= 0:
+            return
+        dark = self._dark
+        color = QColor(72, 105, 132, 120) if dark else QColor(115, 145, 168, 115)
+        radius = min(0.035, max(0.012, render_step * 0.10))
+        x_start = math.ceil((rect.left() - anchor_x) / render_step)
+        x_stop = math.floor((rect.right() - anchor_x) / render_step)
+        for ix in range(x_start, x_stop + 1):
+            x = anchor_x + ix * render_step
+            for iy in range(y_min, y_max + 1):
+                y = iy * render_step - anchor_y
+                item = QGraphicsEllipseItem(x - radius, y - radius,
+                                            2 * radius, 2 * radius)
+                item.setBrush(QBrush(color))
+                item.setPen(Qt.NoPen)
+                item.setZValue(-1.0)
+                item.setAcceptedMouseButtons(Qt.NoButton)
+                item.setData(0, "snap-grid-node")
+                self.addItem(item)
+                self._grid_items.append(item)
+
+    def _redraw_snap_grid(self) -> None:
+        """Refresh only grid dots, preserving selection and editor focus."""
+        if self._data is not None:
+            self._draw_snap_grid()
 
     def set_snap_reference_sites(self, sites) -> None:
         """Set immutable local-coordinate snap targets for this edit session.
@@ -734,7 +827,10 @@ class LatticeView(QGraphicsScene):
             # previous finite sample when such a caller does not provide one.
             self._edit_anchor_offset = (0.0, 0.0)
         if snap_step is not None:
-            self.snap_step = max(0.001, float(snap_step))
+            # Use the validated setter so plug-ins and restored documents get
+            # the same finite range as the toolbar, and so an already-visible
+            # edit grid cannot retain a stale interval.
+            self.set_snap_step(snap_step)
         if self._data is not None:
             self.set_data(self._data)
 
@@ -1220,6 +1316,7 @@ class LatticeView(QGraphicsScene):
                 # Qt lifecycle.
                 QCoreApplication.sendPostedEvents(widget, QEvent.DeferredDelete)
         self._edit_proxies.clear()
+        self._grid_items.clear()
         self._ghost_items.clear()
         self._edit_guides.clear()
         self._edit_leaders.clear()
@@ -1258,6 +1355,11 @@ class LatticeView(QGraphicsScene):
             rail_reserve = max(2.4, 0.28 * (x1 - x0))
             x1 += rail_reserve
         self.setSceneRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+
+        # Keep the snap targets visually behind cell outlines and bonds.  It
+        # is intentionally drawn only while editing; browsing remains clean.
+        if self.edit_mode:
+            self._draw_snap_grid()
 
         # A non-rectangular sample should identify itself in the canvas.  The
         # badge is deliberately anchored to the scene margin (not to a cell
@@ -1350,7 +1452,14 @@ class LatticeView(QGraphicsScene):
         # 最近邻骨架；次近邻仍保留且可点，但退到背景层，避免密集模型
         # 看起来像所有连接同等重要的一张线网。
         pos = {i: (x, y) for i, (x, y, _l, _s) in enumerate(data.sites)}
-        show_edit_details = (not self.edit_mode) or self._show_edit_details
+        # Hiding long bonds is useful for dense presets, but it makes a small
+        # custom triangle look broken when its third edge is merely longer
+        # than the nearest shell.  Small scenes keep every authored edge
+        # visible; dense scenes retain the progressive-disclosure behaviour.
+        compact_scene = len(self._edit_sites) == 3 and len(data.edges) <= 12
+        show_edit_details = (
+            (not self.edit_mode) or self._show_edit_details or compact_scene
+        )
         for i, j, kind in data.edges:
             if (kind == "NN" and not self._show_nn) or (
                 kind != "NN" and (not self._show_nnn or not show_edit_details)
@@ -1520,6 +1629,47 @@ class LatticeView(QGraphicsScene):
             eligible.append(hop)
         return eligible
 
+    @staticmethod
+    def _editor_relation_key(hop: dict) -> tuple:
+        """Normalize duplicate Hermitian rows to one visual physical bond.
+
+        A rendered line represents one geometric relation, even if the table
+        contains a reverse Hermitian copy or several named contributions on
+        that same line.  The table remains the precise per-row fallback; the
+        canvas deliberately follows the user's mental model of one line →
+        one input field.
+        """
+        fr, to = int(hop.get("from_site", -1)), int(hop.get("to_site", -1))
+        ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
+        reverse = ox < 0 or (ox == 0 and oy < 0) or (
+            ox == 0 and oy == 0 and fr > to
+        )
+        if reverse:
+            fr, to, ox, oy = to, fr, -ox, -oy
+        return (fr, to, ox, oy)
+
+    def _editor_representative_hops(self, hops: list[dict]) -> list[dict]:
+        """Return one editor per visually identical physical relation."""
+        representatives: list[dict] = []
+        grouped: dict[tuple, list[int]] = {}
+        for hop in hops:
+            key = self._editor_relation_key(hop)
+            row = int(hop.get("row", -1))
+            if key in grouped:
+                grouped[key].append(row)
+                # Keep a short audit trail on the representative tooltip;
+                # table rows remain untouched and are still the exact fallback.
+                representatives[ next(
+                    i for i, item in enumerate(representatives)
+                    if int(item.get("row", -1)) == grouped[key][0]
+                ) ]["_editor_rows"] = tuple(grouped[key])
+                continue
+            grouped[key] = [row]
+            item = dict(hop)
+            item["_editor_rows"] = (row,)
+            representatives.append(item)
+        return representatives
+
     def _primary_editable_rows(self, hops: list[dict]) -> set[int]:
         """Rows in the shortest non-onsite geometrical hopping shell.
 
@@ -1545,15 +1695,16 @@ class LatticeView(QGraphicsScene):
     def _draw_edit_hop_controls(self):
         """Draw quiet click targets and only the editors that are needed."""
         editable = self._editable_hops()
-        if not editable:
+        editor_hops = self._editor_representative_hops(editable)
+        if not editor_hops:
             return
-        rows = {int(hop.get("row", -1)) for hop in editable}
+        rows = {int(hop.get("row", -1)) for hop in editor_hops}
         if self._active_hop_row not in rows:
             self._active_hop_row = None
         # Small models remain pleasantly direct: all up to three strengths
         # are visible. Dense Kagome/NP/long-range models use progressive
         # disclosure by default: click a source-cell bond to open one field.
-        if self._show_all_hop_editors or len(editable) <= 3:
+        if self._show_all_hop_editors or len(editor_hops) <= 3:
             visible_rows = rows
         elif self._active_hop_row is None:
             visible_rows = set()
@@ -1564,7 +1715,9 @@ class LatticeView(QGraphicsScene):
         # unexpectedly open a distant NNN coefficient in dense Kagome views.
         guide_rows = (
             rows if self._show_edit_details or self._show_all_hop_editors
-            else self._primary_editable_rows(editable)
+            or (len(self._edit_sites) == 3
+                and self._data is not None and len(self._data.edges) <= 12)
+            else self._primary_editable_rows(editor_hops)
         )
         if not self._show_edit_details and not self._show_all_hop_editors:
             visible_rows &= guide_rows
@@ -1576,7 +1729,7 @@ class LatticeView(QGraphicsScene):
         # variable used to shift every subsequent bond after the first one.
         base_anchor_x, base_anchor_y = self._edit_anchor_offset
         midpoint_slots: dict[tuple[int, int], int] = {}
-        for hop in editable:
+        for hop in editor_hops:
             row = int(hop.get("row", -1))
             fr, to = int(hop["from_site"]), int(hop["to_site"])
             ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
@@ -1642,6 +1795,10 @@ class LatticeView(QGraphicsScene):
                 f"{boundary_label}\n"
                 "输入绝对跃迁强度（支持小数或分数，如 1/3）；"
                 "同名键自动化为最简整数比。悬停物理键可查看对应引线。"
+                + (
+                    f"\n已合并等价表格行：{', '.join(str(value + 1) for value in hop.get('_editor_rows', (row,)))}"
+                    if len(hop.get("_editor_rows", (row,))) > 1 else ""
+                )
             )
             editor.editingFinished.connect(
                 lambda r=row, field=editor: self._commit_hop_strength(r, field)

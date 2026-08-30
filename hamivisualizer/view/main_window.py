@@ -146,6 +146,14 @@ class MainWindow(QMainWindow):
         self.lattice_snap_btn.setToolTip(
             "拖动格点时吸附到网格和精确几何位置；按住 Alt 可临时自由移动"
         )
+        self.lattice_grid_btn = QToolButton()
+        self.lattice_grid_btn.setText("网格")
+        self.lattice_grid_btn.setCheckable(True)
+        self.lattice_grid_btn.setChecked(True)
+        self.lattice_grid_btn.setToolTip(
+            "编辑时显示可吸附的网格节点；网格间距由右侧“网格”数值调整，"
+            "关闭只隐藏背景点，不会改变吸附规则"
+        )
         # Keep the snap granularity beside the mode switch.  The preference
         # dialog remains the durable/global fallback, while an editor-local
         # field makes the common "move, try a finer grid, try again" workflow
@@ -157,8 +165,8 @@ class MainWindow(QMainWindow):
         snap_step_layout = QHBoxLayout(self.lattice_snap_step_widget)
         snap_step_layout.setContentsMargins(2, 0, 2, 0)
         snap_step_layout.setSpacing(3)
-        snap_step_label = QLabel("步长")
-        snap_step_label.setToolTip("设置晶格编辑时的网格吸附间隔")
+        snap_step_label = QLabel("网格")
+        snap_step_label.setToolTip("设置晶格编辑时的网格节点间距和吸附间隔")
         self.lattice_snap_step_spin = QDoubleSpinBox()
         self.lattice_snap_step_spin.setRange(0.001, 10.0)
         self.lattice_snap_step_spin.setDecimals(3)
@@ -167,7 +175,7 @@ class MainWindow(QMainWindow):
         self.lattice_snap_step_spin.setSuffix("")
         self.lattice_snap_step_spin.setFixedWidth(78)
         self.lattice_snap_step_spin.setToolTip(
-            "晶格编辑吸附间隔；例如 0.25 表示每 1/4 个单位吸附一次。"
+            "晶格编辑网格节点间距和吸附间隔；例如 0.25 表示每 1/4 个单位一个节点。"
             "关闭吸附时该值保留，重新开启后继续使用。"
         )
         snap_step_layout.addWidget(snap_step_label)
@@ -207,6 +215,7 @@ class MainWindow(QMainWindow):
         self.lattice_redo_btn.hide()
         self.lattice_restore_btn.hide()
         self.lattice_snap_btn.hide()
+        self.lattice_grid_btn.hide()
         self.lattice_snap_step_widget.hide()
         self.lattice_coeff_btn.hide()
         self.lattice_details_btn.hide()
@@ -224,6 +233,7 @@ class MainWindow(QMainWindow):
             self.lattice_redo_btn,
             self.lattice_restore_btn,
             self.lattice_snap_btn,
+            self.lattice_grid_btn,
             self.lattice_snap_step_widget,
             self.lattice_add_site_btn,
             self.lattice_add_hop_btn,
@@ -316,6 +326,7 @@ class MainWindow(QMainWindow):
         self.matrix_scene.selectionChanged.connect(self._on_matrix_selection_changed)
         self.lattice_mode_btn.toggled.connect(self._set_lattice_edit_mode)
         self.lattice_snap_btn.toggled.connect(self._set_snap_enabled)
+        self.lattice_grid_btn.toggled.connect(self._set_lattice_grid_visible)
         self.lattice_snap_step_spin.valueChanged.connect(self._set_snap_step)
         self.lattice_add_site_btn.toggled.connect(self._set_site_creation_mode)
         self.lattice_add_hop_btn.toggled.connect(self._set_hop_creation_mode)
@@ -542,6 +553,7 @@ class MainWindow(QMainWindow):
         self.lattice_redo_btn.setVisible(bool(enabled))
         self.lattice_restore_btn.setVisible(bool(enabled and self._edit_baseline_geometry))
         self.lattice_snap_btn.setVisible(bool(enabled))
+        self.lattice_grid_btn.setVisible(bool(enabled))
         self.lattice_snap_step_widget.setVisible(bool(enabled))
         self.lattice_add_site_btn.setVisible(bool(enabled))
         self.lattice_add_hop_btn.setVisible(bool(enabled))
@@ -606,13 +618,22 @@ class MainWindow(QMainWindow):
         if not math.isfinite(step):
             return
         step = max(0.001, min(10.0, step))
-        self.lattice_scene.snap_step = step
+        self.lattice_scene.set_snap_step(step)
         if self._workspace_enabled:
             self.preferences.snap_step = step
             save_preferences(self.preferences, self._workspace_root)
         if self.lattice_mode_btn.isChecked():
             self.statusBar().showMessage(
                 f"吸附网格步长已设为 {step:g}；拖动格点时将按此间隔对齐", 1800
+            )
+
+    def _set_lattice_grid_visible(self, enabled: bool):
+        """Toggle the visual snap grid without changing model data."""
+        self.lattice_scene.set_grid_visible(bool(enabled))
+        if self.lattice_mode_btn.isChecked():
+            self.statusBar().showMessage(
+                "已显示编辑网格节点" if enabled else "已隐藏编辑网格节点（吸附规则不变）",
+                1600,
             )
 
     def _set_hop_creation_mode(self, enabled: bool):
@@ -1408,9 +1429,25 @@ class MainWindow(QMainWindow):
             empty = menu.addAction("暂无最近模型")
             empty.setEnabled(False)
             return
-        for path_text in list(self._recent_model_paths):
+        paths = list(self._recent_model_paths)
+        basename_counts: dict[str, int] = {}
+        for path_text in paths:
+            name = Path(path_text).name or path_text
+            key = name.casefold()
+            basename_counts[key] = basename_counts.get(key, 0) + 1
+        for path_text in paths:
             path = Path(path_text)
-            action = menu.addAction(path.name)
+            name = path.name or path_text
+            # Unique names stay compact.  When two recent entries share a
+            # basename, append only the parent directory so the choice is
+            # distinguishable at a glance without turning the menu into a
+            # full-path dump; the tooltip still exposes the exact path.
+            if basename_counts.get(name.casefold(), 0) > 1:
+                parent = path.parent.name or str(path.parent)
+                label = f"{name}  ·  {parent}"
+            else:
+                label = name
+            action = menu.addAction(label)
             action.setToolTip(str(path))
             action.triggered.connect(
                 lambda _checked=False, selected=path_text: self._open_recent_model(selected)

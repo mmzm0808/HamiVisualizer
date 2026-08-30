@@ -143,6 +143,30 @@ def test_recent_models_are_deduplicated_and_persisted(tmp_path):
     assert [Path(p).name for p in load_workspace(tmp_path).recent_models] == ["first.hvisual", "second.hvisual"]
 
 
+def test_recent_menu_disambiguates_duplicate_basenames(tmp_path):
+    """同名最近模型在菜单中显示父目录，避免用户打开错误文件。"""
+    _app, window, controller = _workspace(tmp_path)
+    first_dir = tmp_path / "experiment-a"
+    second_dir = tmp_path / "experiment-b"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = first_dir / "model.hvisual"
+    second = second_dir / "model.hvisual"
+    save_model(first, controller.current_document())
+    save_model(second, controller.current_document())
+    window._remember_recent_model(first)
+    window._remember_recent_model(second)
+    window._refresh_recent_models_menu()
+
+    actions = window.recent_models_menu.actions()
+    assert [action.text() for action in actions[:2]] == [
+        "model.hvisual  ·  experiment-b",
+        "model.hvisual  ·  experiment-a",
+    ]
+    assert actions[0].toolTip() == str(second.resolve())
+    assert actions[1].toolTip() == str(first.resolve())
+
+
 def test_clearing_recent_models_refreshes_open_menu_immediately(tmp_path):
     app, window, controller = _workspace(tmp_path)
     model_path = tmp_path / "recent.hvisual"

@@ -664,10 +664,30 @@ class LatticeView(QGraphicsScene):
         radius = min(0.035, max(0.012, render_step * 0.10))
         x_start = math.ceil((rect.left() - anchor_x) / render_step)
         x_stop = math.floor((rect.right() - anchor_x) / render_step)
+        if self._edit_cell_constrained:
+            (a1x, a1y), (a2x, a2y) = self._cell_vectors
+            cell_det = a1x * a2y - a1y * a2x
+        else:
+            cell_det = 0.0
         for ix in range(x_start, x_stop + 1):
             x = anchor_x + ix * render_step
             for iy in range(y_min, y_max + 1):
                 y = iy * render_step - anchor_y
+                # The visual range is deliberately axis-aligned so it can
+                # reserve a small, predictable margin around an oblique
+                # primitive cell.  Do not show points from that bounding box
+                # which are outside the actual Bravais parallelogram: those
+                # targets look actionable but would be rejected by the site
+                # tool's fractional-cell validation.
+                if self._edit_cell_constrained:
+                    local_x = x - anchor_x
+                    local_y = -y - anchor_y
+                    if abs(cell_det) >= 1e-12:
+                        u = (local_x * a2y - local_y * a2x) / cell_det
+                        v = (a1x * local_y - a1y * local_x) / cell_det
+                        if not (-1e-9 <= u < 1.0 - 1e-9
+                                and -1e-9 <= v < 1.0 - 1e-9):
+                            continue
                 item = QGraphicsEllipseItem(x - radius, y - radius,
                                             2 * radius, 2 * radius)
                 item.setBrush(QBrush(color))

@@ -2891,6 +2891,39 @@ def test_snap_grid_stays_in_the_editable_cell_work_area_not_the_coefficient_rail
     assert bounds.height() < scene.sceneRect().height()
 
 
+@pytest.mark.parametrize("template_name", ("蜂窝", "三角", "Kagome"))
+def test_oblique_snap_grid_contains_only_real_bravais_cell_targets(template_name):
+    """斜元胞包围框外的装饰点不能伪装成可吸附目标。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        template_name, boundary_kind="obc", shape="rectangle",
+        connectivity="最近邻", nx=4, ny=4,
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    scene = win.lattice_scene
+    assert scene._edit_cell_constrained
+    (a1x, a1y), (a2x, a2y) = scene._cell_vectors
+    det = a1x * a2y - a1y * a2x
+    assert abs(det) > 1e-12
+    anchor_x, anchor_y = scene._edit_anchor_offset
+    grid = [item for item in scene.items()
+            if item.data(0) == "snap-grid-node"]
+    assert grid
+    for item in grid:
+        point = item.sceneBoundingRect().center()
+        local_x = point.x() - anchor_x
+        local_y = -point.y() - anchor_y
+        u = (local_x * a2y - local_y * a2x) / det
+        v = (a1x * local_y - a1y * local_x) / det
+        assert -1e-8 <= u < 1.0 + 1e-8
+        assert -1e-8 <= v < 1.0 + 1e-8
+
+
 def test_site_creation_respects_snap_toggle_and_rejects_invalid_or_duplicate_points():
     """添加格点不应绕过吸附开关、元胞边界或重复坐标校验。"""
     QApplication.instance() or QApplication([])

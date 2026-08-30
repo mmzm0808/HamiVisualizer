@@ -2953,6 +2953,46 @@ def test_oblique_edit_sites_have_visible_snap_targets_at_their_exact_positions()
         ) <= 1e-6
 
 
+def test_edit_grid_marks_original_geometry_as_a_visible_restore_target():
+    """拖动后原始位置仍有可见回归目标，并即时刷新。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "蜂窝", boundary_kind="obc", shape="rectangle",
+        connectivity="最近邻", nx=3, ny=3,
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    scene = win.lattice_scene
+    baseline = list(scene._edit_sites)
+    assert baseline
+    moved = [(x + 0.2, y, sub) for x, y, sub in baseline]
+    scene.set_edit_context(
+        moved, cell_vectors=scene._cell_vectors,
+        anchor_offset=scene.edit_anchor_offset,
+    )
+    scene.set_snap_reference_sites([(x, y) for x, y, _sub in baseline])
+    QApplication.processEvents()
+    markers = [item for item in scene.items()
+               if item.data(0) == "snap-grid-node"
+               and item.data(1) == "baseline-anchor"]
+    assert markers
+    anchor_x, anchor_y = scene.edit_anchor_offset
+    # The A site at (0, 0) already coincides with a regular 0.25 grid dot;
+    # use graphene's irrational B basis coordinate to exercise the explicit
+    # dashed baseline marker path.
+    expected = QPointF(float(baseline[1][0]) + anchor_x,
+                       -float(baseline[1][1]) - anchor_y)
+    assert any(
+        math.hypot(item.sceneBoundingRect().center().x() - expected.x(),
+                   item.sceneBoundingRect().center().y() - expected.y()) <= 1e-6
+        for item in markers
+    )
+
+
 def test_user_added_long_range_hop_stays_visible_in_compact_edit_layer():
     """新加的长程跃迁不能因默认降噪而从画布上消失。"""
     _app, win, ctrl = _window()

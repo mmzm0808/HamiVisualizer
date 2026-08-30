@@ -710,12 +710,27 @@ class LatticeView(QGraphicsScene):
         # halo at each current editable site that is not already on a regular
         # dot.  It is a visual snap target, not a second site and never enters
         # hit testing; the editable circle remains on top of it.
-        if self._edit_cell_constrained and self._edit_sites:
+        if self._edit_cell_constrained and (self._edit_sites or self._snap_reference_sites):
             halo_color = QColor(72, 105, 132, 150) if dark else QColor(82, 113, 137, 135)
             halo_pen = QPen(halo_color, 0.9)
             halo_pen.setCosmetic(True)
+            reference_pen = QPen(halo_color, 0.8, Qt.DashLine)
+            reference_pen.setCosmetic(True)
             halo_radius = max(0.215, self._site_radius * 1.1 + 0.025)
-            for sx, sy, _sub in self._edit_sites:
+            # Current sites and the immutable geometry captured on entry to
+            # edit mode are both legitimate magnetic targets.  The latter is
+            # intentionally dashed: after a drag it gives the user a visible
+            # route back to the original graphene/Kagome position, instead of
+            # requiring them to remember coordinates or guess where to drop.
+            targets = [
+                (float(sx), float(sy), "site-anchor")
+                for sx, sy, _sub in self._edit_sites
+            ] + [
+                (float(sx), float(sy), "baseline-anchor")
+                for sx, sy in self._snap_reference_sites
+            ]
+            seen_targets: set[tuple[int, int]] = set()
+            for sx, sy, target_kind in targets:
                 tx = float(sx) + anchor_x
                 ty = -float(sy) - anchor_y
                 target = QPointF(tx, ty)
@@ -729,6 +744,10 @@ class LatticeView(QGraphicsScene):
                     if not (-1e-9 <= u < 1.0 - 1e-9
                             and -1e-9 <= v < 1.0 - 1e-9):
                         continue
+                target_key = (round(tx * 1.0e8), round(ty * 1.0e8))
+                if target_key in seen_targets:
+                    continue
+                seen_targets.add(target_key)
                 nearest = min(
                     (math.hypot(tx - gx, ty - gy) for gx, gy in regular_centers),
                     default=float("inf"),
@@ -740,11 +759,11 @@ class LatticeView(QGraphicsScene):
                     2 * halo_radius, 2 * halo_radius,
                 )
                 halo.setBrush(Qt.NoBrush)
-                halo.setPen(halo_pen)
+                halo.setPen(reference_pen if target_kind == "baseline-anchor" else halo_pen)
                 halo.setZValue(-0.8)
                 halo.setAcceptedMouseButtons(Qt.NoButton)
                 halo.setData(0, "snap-grid-node")
-                halo.setData(1, "site-anchor")
+                halo.setData(1, target_kind)
                 self.addItem(halo)
                 self._grid_items.append(halo)
 
@@ -775,6 +794,12 @@ class LatticeView(QGraphicsScene):
             if math.isfinite(x) and math.isfinite(y):
                 references.append((x, y))
         self._snap_reference_sites = references
+        # Restoring a baseline updates this list after the model rebuild has
+        # already painted the scene.  Refresh only the decorative target
+        # layer so the dashed return-to-baseline markers appear immediately;
+        # no Hamiltonian or editor proxy is rebuilt.
+        if self._data is not None and self.edit_mode:
+            self._redraw_snap_grid()
 
     @property
     def active_hop_row(self) -> int | None:

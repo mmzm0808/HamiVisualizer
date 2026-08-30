@@ -351,13 +351,33 @@ def test_workspace_ui_scaling_covers_full_range(tmp_path):
     assert window._ui_scale == 1.8
     large_row = window.panel.site_table.verticalHeader().defaultSectionSize()
     assert window.panel.param_table.columnWidth(0) == 126
-    assert window.panel.param_table.columnWidth(1) == 108
+    # Column fitting may add a few pixels for the scaled delegate padding;
+    # preserve the old baseline while allowing that accessibility headroom.
+    assert window.panel.param_table.columnWidth(1) >= 108
     assert window.panel_scroll.minimumWidth() == 630
     assert window.matrix_scene._cell_size == matrix_cell_size
     assert window.matrix_gv.transform().m11() == matrix_transform
     window._set_ui_scale(0.1)
     assert window._ui_scale == 0.8
     assert window.panel.site_table.verticalHeader().defaultSectionSize() < large_row
+
+
+def test_long_parameter_value_expands_value_column_without_side_overflow(tmp_path):
+    """Fraction results remain readable in the parameter table at 180%."""
+    app, window, _controller = _workspace(tmp_path)
+    window.resize(1440, 920)
+    window.show()
+    app.processEvents()
+    window._set_ui_scale(1.8, persist=False)
+    item = window.panel.param_table.item(0, 1)
+    item.setText("0.333333333333")
+    app.processEvents()
+
+    table = window.panel.param_table
+    value_width = table.columnWidth(1)
+    text_width = table.fontMetrics().horizontalAdvance(item.text())
+    assert value_width >= text_width + max(18, table.fontMetrics().height() // 2)
+    assert table.horizontalScrollBar().maximum() == 0
 
 
 def test_control_rail_has_no_horizontal_overflow_in_dense_edit_state(tmp_path):

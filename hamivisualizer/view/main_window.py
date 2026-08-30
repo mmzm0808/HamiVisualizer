@@ -1489,6 +1489,15 @@ class MainWindow(QMainWindow):
         # columns with the application font just like row heights.
         self.panel.param_table.setColumnWidth(0, round(70 * scale))
         self.panel.param_table.setColumnWidth(1, round(60 * scale))
+        # A committed fraction/high-precision value can be wider than the
+        # scaled defaults above.  Let the panel grow just enough to show it
+        # fully while retaining a usable slider column.
+        self.panel._fit_param_table_columns()
+        # Column geometry can be normalized once more by QTableWidget during
+        # the ensuing splitter/layout pass (especially when switching from
+        # 100% to 180%).  Defer one final fit until that pass completes so a
+        # long value cannot regress to an elided ``0....`` label.
+        QTimer.singleShot(0, self.panel._fit_param_table_columns)
         for group in (
             self.panel.boundary_group, self.panel.params_group, self.panel.energy_group,
             self.panel.display_group, self.panel.sites_group, self.panel.hops_group,

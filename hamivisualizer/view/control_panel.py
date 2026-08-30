@@ -25,7 +25,9 @@ from ..model.hamiltonian import (
 )
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QKeyEvent, QPainter, QPalette, QPen, QPolygonF
+from PySide6.QtGui import (
+    QBrush, QColor, QFontMetrics, QKeyEvent, QPainter, QPalette, QPen, QPolygonF,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QAbstractSpinBox,
@@ -364,6 +366,11 @@ class ControlPanel(QWidget):
         self.param_table.setColumnWidth(1, 60)
         self.param_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.param_table.horizontalHeader().setDefaultAlignment(Qt.AlignCenter)
+        # Parameter names/values are compact scientific data, not prose.  Do
+        # not replace them with an ellipsis when Qt paints a cell; the fit
+        # helper below owns the width budget and keeps the complete value
+        # readable at every UI scale.
+        self.param_table.setTextElideMode(Qt.ElideNone)
         self.param_table.setAlternatingRowColors(True)
         p_lay.addWidget(self.param_table)
         hint = QLabel("φ 按 π 计（例如 1/4 = π/4），支持直接输入分数；其余参数为原值。")
@@ -895,6 +902,7 @@ class ControlPanel(QWidget):
             sl.valueChanged.connect(lambda val, row=r: self._param_slider_changed(row, val))
         tbl.blockSignals(False)
         self._fit_param_table_height()
+        self._fit_param_table_columns()
 
     def _fit_param_table_height(self) -> None:
         """Keep ordinary parameter sets visible without a nested scrollbar.
@@ -917,6 +925,63 @@ class ControlPanel(QWidget):
         else:
             table.setMinimumHeight(0)
             table.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
+    def _fit_param_table_columns(self) -> None:
+        """Keep long parameter values readable without creating side scrolling.
+
+        The value column starts at a compact fixed width so the slider keeps
+        most of the rail.  A fraction or a high-precision value can be wider
+        than that default, though; Qt then elides it as ``0....`` even when
+        the panel still has spare room.  Grow the name/value columns from
+        their actual font metrics and reserve a modest minimum for the
+        slider.  If a user-defined symbol is genuinely too long, shrink the
+        name column first but never let the table exceed its viewport.
+        """
+        table = self.param_table
+        rows = table.rowCount()
+        if rows <= 0:
+            return
+        metrics = QFontMetrics(table.font())
+        # The stylesheet contributes scaled left/right item padding (5 px at
+        # 100%, 9 px at 180%) in addition to the delegate's frame.  Reserve
+        # one full line-height as a conservative budget; using only half a
+        # line caused the final character of a 12-digit value to be elided at
+        # 180% even though the raw font metric appeared to fit.
+        horizontal_pad = max(24, metrics.height())
+
+        def needed(column: int, header: str) -> int:
+            texts = [header]
+            for row in range(rows):
+                item = table.item(row, column)
+                if item is not None:
+                    texts.append(item.text())
+            return max(metrics.horizontalAdvance(text) for text in texts) + horizontal_pad
+
+        name_needed = max(70, needed(0, PARAM_COLS[0]))
+        value_needed = max(60, needed(1, PARAM_COLS[1]))
+        current_name = table.columnWidth(0)
+        current_value = table.columnWidth(1)
+        target_name = max(current_name, name_needed)
+        target_value = max(current_value, value_needed)
+
+        viewport_width = table.viewport().width()
+        if viewport_width > 0:
+            slider_min = max(100, metrics.horizontalAdvance(PARAM_COLS[2]) + horizontal_pad)
+            fixed_budget = max(0, viewport_width - slider_min)
+            overflow = target_name + target_value - fixed_budget
+            if overflow > 0:
+                # Preserve enough room for a normal symbol name first; long
+                # numeric values get priority because they are the editable
+                # data users most often need to inspect exactly.
+                reducible_name = max(0, target_name - 70)
+                reduce_name = min(reducible_name, overflow)
+                target_name -= reduce_name
+                overflow -= reduce_name
+                if overflow > 0:
+                    target_value = max(60, target_value - overflow)
+
+        table.setColumnWidth(0, int(target_name))
+        table.setColumnWidth(1, int(target_value))
 
     def get_params(self) -> dict:
         """读参数表 → {name: 实际值} (φ 换算回弧度)."""
@@ -946,12 +1011,21 @@ class ControlPanel(QWidget):
         tbl.blockSignals(True)
         tbl.item(row, 1).setText(f"{val * dscale:.4g}")
         tbl.blockSignals(False)
+        # Slider edits also replace the text cell.  Reflow immediately so a
+        # larger display scale never leaves the freshly formatted value
+        # elided behind a stale column width.
+        self._fit_param_table_columns()
         self._emit_changed()
 
     def _param_cell_changed(self, row: int, col: int):
         if col != 1:
             return
         tbl = self.param_table
+        # ``cellChanged`` is emitted for every keystroke, including a
+        # temporarily invalid intermediate value while the user types a
+        # fraction.  Resize before parsing so both valid and intermediate
+        # text remain visible and the editor never appears to jump/crop.
+        self._fit_param_table_columns()
         name = tbl.item(row, 0).text()
         try:
             v = self._parse_scalar(tbl.item(row, 1).text())
@@ -968,6 +1042,7 @@ class ControlPanel(QWidget):
             tbl.blockSignals(True)
             tbl.item(row, 1).setText(normalized)
             tbl.blockSignals(False)
+            self._fit_param_table_columns()
         _imin, _imax, scale = self._slider_cfg(name)
         actual = v * self._actual_scale(name)
         vint = int(round(actual / scale))
@@ -980,6 +1055,7 @@ class ControlPanel(QWidget):
                 sl.setMaximum(vint)
             sl.setValue(vint)
             sl.blockSignals(False)
+        self._fit_param_table_columns()
         self._emit_changed()
 
     # ---- 输入读取 (Controller 消费) ----

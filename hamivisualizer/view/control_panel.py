@@ -464,8 +464,15 @@ class ControlPanel(QWidget):
         # at exactly the wrong side of a lattice point, changing a 6→4→2
         # mask into a visibly broken 6→2 mask.  The value remains compact in
         # the field but the model keeps enough precision for geometry tests.
-        self.lx_spin.setDecimals(12)
+        # Eight decimals keep the displayed value within the narrow two-column
+        # rail (the site table itself also uses eight decimals), while still
+        # resolving the irrational presets far below the geometry tolerance.
+        # This is an intentional input/display precision choice: the geometry
+        # model itself continues to carry the vector values independently.
+        self.lx_spin.setDecimals(8)
         self.lx_spin.setMaximumWidth(140)
+        self.lx_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.lx_spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.lx_spin.setSpecialValueText("自动")
         self.lx_spin.setToolTip(
             "调整相邻元胞沿 a₁ 的间距；斜原胞会保持方向，仅缩放长度。"
@@ -475,8 +482,10 @@ class ControlPanel(QWidget):
         cell_row.addWidget(QLabel("a₂ 长度"))
         self.ly_spin = QDoubleSpinBox()
         self.ly_spin.setRange(0.0, 1000.0)
-        self.ly_spin.setDecimals(12)
+        self.ly_spin.setDecimals(8)
         self.ly_spin.setMaximumWidth(140)
+        self.ly_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.ly_spin.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.ly_spin.setSpecialValueText("自动")
         self.ly_spin.setToolTip(
             "调整相邻元胞沿 a₂ 的间距；斜原胞会保持方向，仅缩放长度。"

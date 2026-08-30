@@ -1113,6 +1113,33 @@ def test_oblique_cell_length_edit_preserves_direction():
     assert after[1][0] / after[1][1] == pytest.approx(a2[0] / a2[1])
 
 
+def test_cell_length_inputs_are_fully_readable_at_100_percent():
+    """The two compact length fields must not elide irrational preset values."""
+    _app, win, ctrl = _window()
+    win.resize(1920, 1200)
+    win.show()
+    QApplication.processEvents()
+    for template_name in TEMPLATE_NAMES:
+        ctrl.apply_document(template_document(
+            template_name, boundary_kind="obc", nx=4, ny=4,
+            connectivity="最近邻",
+        ))
+        QApplication.processEvents()
+        for field_name in ("lx_spin", "ly_spin"):
+            field = getattr(win.panel, field_name)
+            text = field.text()
+            line_edit = field.lineEdit()
+            assert "..." not in text, template_name
+            # Leave a small cushion for the style's frame/padding.  This is a
+            # geometry assertion rather than a pixel snapshot so it remains
+            # deterministic across the bundled Windows/Linux Qt backends.
+            available = max(0, line_edit.contentsRect().width() - 4)
+            assert field.fontMetrics().horizontalAdvance(text) <= available, (
+                template_name, field_name, text,
+                field.fontMetrics().horizontalAdvance(text), available,
+            )
+
+
 def test_oblique_cell_length_zero_does_not_leave_an_inconsistent_auto_state():
     """A zero length in oblique mode is rejected and restored visibly."""
     _app, win, ctrl = _window()

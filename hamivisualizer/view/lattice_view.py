@@ -496,6 +496,13 @@ class LatticeView(QGraphicsScene):
         self._edit_proxies: list[QGraphicsProxyWidget] = []
         self._edit_guides: list[QGraphicsLineItem] = []
         self._edit_leaders: list[QGraphicsLineItem] = []
+        # Compact models can contain adjacent collinear bonds (for example
+        # SSH's intracell and intercell links).  A small relation badge above
+        # each right-hand editor makes those two coefficients unambiguous
+        # without adding another table column or a second input field for the
+        # same relation.
+        self._edit_relation_badges: list[tuple[QGraphicsTextItem,
+                                                 QGraphicsProxyWidget]] = []
         # Magnetic edit-grid dots are a presentation layer, not lattice
         # sites.  Keep explicit references so changing the toolbar spacing
         # can redraw only this layer without rebuilding editors or topology.
@@ -1548,6 +1555,9 @@ class LatticeView(QGraphicsScene):
         self._ghost_items.clear()
         self._edit_guides.clear()
         self._edit_leaders.clear()
+        for badge, _proxy in self._edit_relation_badges:
+            self.removeItem(badge)
+        self._edit_relation_badges.clear()
         self._edit_leader_links.clear()
         self._edit_proxy_anchors.clear()
         self.clear()
@@ -1736,7 +1746,12 @@ class LatticeView(QGraphicsScene):
             y1, y2 = -y1, -y2
             line = QGraphicsLineItem(x1, y1, x2, y2)
             if kind == "NN":
-                pen = _pen(_blend(pal.edge_nn, 0.5, 0.5), 1.2)
+                # A periodic image is a distinct relation from the solid
+                # intracell bond even when the two segments are collinear
+                # (SSH is the common example).  A quiet dash pattern prevents
+                # the two from reading as one long line while retaining the
+                # familiar faded ghost colour.
+                pen = _pen(_blend(pal.edge_nn, 0.5, 0.5), 1.2, Qt.DashLine)
             else:
                 pen = _pen(_blend(pal.edge_nnn, 0.4, 0.6), 1.0, Qt.DashLine)
             line.setPen(pen)
@@ -2109,6 +2124,35 @@ class LatticeView(QGraphicsScene):
             proxy.setZValue(25)
             self.addItem(proxy)
             self._edit_proxies.append(proxy)
+            # Adjacent collinear bonds otherwise look like one continuous
+            # line with two anonymous numeric boxes.  Keep the badge in the
+            # same right-hand rail, but only for compact models where it adds
+            # clarity instead of turning a dense coefficient list into a
+            # second annotation layer.
+            if len(editor_hops) <= 3:
+                relation_text = (
+                    "胞内" if (ox == 0 and oy == 0)
+                    else f"胞间 {ox:+d},{oy:+d}"
+                )
+                badge = QGraphicsTextItem(relation_text)
+                badge_font = QFont("Segoe UI")
+                badge_font.setPointSizeF(8.0)
+                badge_font.setBold(True)
+                badge.setFont(badge_font)
+                badge.setDefaultTextColor(
+                    QColor("#1769aa") if not self._dark
+                    else QColor("#8fd3ff")
+                )
+                badge.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+                badge.setOpacity(0.9)
+                badge.setZValue(26)
+                badge.setData(0, "hopping-editor-relation")
+                badge.setToolTip(
+                    f"跃迁 {row + 1}：{relation_text}；"
+                    f"格点 {from_site_label} → {to_site_label}"
+                )
+                self.addItem(badge)
+                self._edit_relation_badges.append((badge, proxy))
             self._edit_leader_links.append((diagonal, horizontal, mx, my, proxy))
             self._edit_proxy_anchors.append((proxy, editor_anchor_x, editor_anchor_y))
 
@@ -2276,6 +2320,9 @@ class LatticeView(QGraphicsScene):
                 proxy, x, y, width_px, height_px, width_scene, height_scene,
                 link[2], link[3], link[0], link[1],
             ))
+        badge_by_proxy = {
+            proxy: badge for badge, proxy in self._edit_relation_badges
+        }
         # Keep the user's row order stable; focus only changes z-order, not
         # the visual order of the right-hand coefficient list.
         self._last_editor_layout = (factor, [])
@@ -2316,7 +2363,29 @@ class LatticeView(QGraphicsScene):
             panel_right = max_x
             panel_left = panel_right - rail_width
         available_height = max(1e-9, rect.height() - 2 * edge_margin)
-        total_height = sum(item[6] for item in entries_with_midpoint)
+        # Badges occupy a small fixed-pixel pocket immediately above their
+        # editor.  Include that pocket in the rail calculation so the first
+        # badge cannot be clipped by the scene top and the last one cannot
+        # fall below the viewport after a fit or zoom.
+        badge_metrics = {}
+        for item in entries_with_midpoint:
+            badge = badge_by_proxy.get(item[0])
+            if badge is None:
+                badge_metrics[item[0]] = (0.0, 0.0)
+                continue
+            bounds = badge.boundingRect()
+            badge_metrics[item[0]] = (
+                max(0.0, float(bounds.width()) / factor),
+                max(0.0, float(bounds.height()) / factor),
+            )
+        badge_pad = 3.0 / factor
+        total_height = sum(
+            item[6] + (
+                badge_metrics[item[0]][1] + badge_pad
+                if badge_metrics[item[0]][1] > 0 else 0.0
+            )
+            for item in entries_with_midpoint
+        )
         if entries_with_midpoint:
             natural_gap = gap_scene
             needed = total_height + natural_gap * (len(entries_with_midpoint) - 1)
@@ -2339,11 +2408,23 @@ class LatticeView(QGraphicsScene):
         cursor_y = start_y
         for (proxy, _x, _y, _width_px, _height_px, width_scene, height_scene,
              mx, my, diagonal, horizontal) in entries_with_midpoint:
+            _badge_width, badge_height = badge_metrics.get(proxy, (0.0, 0.0))
+            badge_extra = badge_height + badge_pad if badge_height > 0 else 0.0
             max_y = rect.bottom() - edge_margin - height_scene
-            py = min(max(cursor_y, rect.top() + edge_margin), max_y)
+            py = min(
+                max(cursor_y + badge_extra, rect.top() + edge_margin + badge_extra),
+                max_y,
+            )
             chosen = QRectF(panel_right - width_scene, py,
                             width_scene, height_scene)
             proxy.setPos(chosen.topLeft())
+            badge = badge_by_proxy.get(proxy)
+            if badge is not None and badge_height > 0:
+                badge_width = badge_metrics[proxy][0]
+                badge.setPos(
+                    chosen.right() - badge_width,
+                    chosen.top() - badge_height - 2.0 / factor,
+                )
             # Route the diagonal leader to a bend just left of the rail, then
             # run horizontally into the field's left edge.  Both segments
             # use cosmetic dashed pens, so zooming never changes readability.

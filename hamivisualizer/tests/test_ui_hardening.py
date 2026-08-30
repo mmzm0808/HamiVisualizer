@@ -1546,6 +1546,51 @@ def test_edit_strength_rail_keeps_multiple_bonds_on_the_right_without_drift():
         assert proxy.pos().x() > mx
 
 
+def test_compact_editors_explain_adjacent_intra_and_intercell_bonds():
+    """共线的 SSH 两条键也要能一眼分辨胞内/胞间关系。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "SSH", boundary_kind="semi", connectivity="最近邻", nx=4, ny=4,
+    ))
+    win.resize(1368, 900)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+
+    scene = win.lattice_scene
+    ghost_nn = [item for item in scene.items()
+                if item.data(0) == "ghost-edge-nn"]
+    assert ghost_nn
+    assert all(item.pen().style() == Qt.DashLine for item in ghost_nn)
+    # Badges sit above their corresponding fixed-pixel fields at both the
+    # normal and accessibility UI scales, without escaping the viewport.
+    for scale in (1.0, 1.8):
+        win._set_ui_scale(scale, persist=False)
+        ctrl.fit_all(force=True)
+        QApplication.processEvents()
+        badges = sorted(
+            (item for item in scene.items()
+             if item.data(0) == "hopping-editor-relation"),
+            key=lambda item: next(
+                int(proxy.data(1))
+                for badge, proxy in scene._edit_relation_badges
+                if badge is item
+            ),
+        )
+        assert [badge.toPlainText() for badge in badges] == [
+            "胞内", "胞间 +1,+0",
+        ]
+        assert len(scene._edit_proxies) == 2
+        view = win.lattice_gv
+        for badge, proxy in scene._edit_relation_badges:
+            badge_top = view.mapFromScene(badge.pos()).y()
+            editor_top = view.mapFromScene(proxy.pos()).y()
+            assert badge_top <= editor_top
+            assert -2 <= badge_top <= view.viewport().height() + 2
+
+
 @pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
 @pytest.mark.parametrize("boundary_kind", ("semi", "obc"))
 @pytest.mark.parametrize("ui_scale", (1.0, 1.8))

@@ -3053,6 +3053,48 @@ def test_oblique_snap_grid_and_rounding_share_bravais_fractional_coordinates():
     assert v == pytest.approx(round(v * n2) / n2, abs=1e-8)
 
 
+@pytest.mark.parametrize("template_name", TEMPLATE_NAMES)
+def test_all_default_basis_sites_land_on_visible_bravais_snap_targets(template_name):
+    """每个默认模型的真实基元格点都应落在同一组可吸附背景点上。"""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        template_name, boundary_kind="obc", shape="rectangle",
+        connectivity="最近邻", nx=3, ny=3,
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    scene = win.lattice_scene
+    if not scene._edit_sites:
+        pytest.skip("空模型没有可编辑基元")
+    (a1x, a1y), (a2x, a2y) = scene._cell_vectors
+    det = a1x * a2y - a1y * a2x
+    assert abs(det) > 1e-12, template_name
+    anchor_x, anchor_y = scene._edit_anchor_offset
+    regular = [item for item in scene.items()
+               if item.data(0) == "snap-grid-node"
+               and item.data(1) == "bravais-grid"]
+    assert regular, template_name
+    n1, n2 = scene._bravais_grid_counts()
+    for x, y, _sub in scene._edit_sites:
+        u = (x * a2y - y * a2x) / det
+        v = (a1x * y - a1y * x) / det
+        # Built-in sites use simple fractions; the density chooser should
+        # make those fractions exact grid indices rather than relying on a
+        # post-hoc alignment halo.
+        assert u == pytest.approx(round(u * n1) / n1, abs=1e-7), template_name
+        assert v == pytest.approx(round(v * n2) / n2, abs=1e-7), template_name
+        target = QPointF(x + anchor_x, -y - anchor_y)
+        assert min(
+            math.hypot(target.x() - item.sceneBoundingRect().center().x(),
+                       target.y() - item.sceneBoundingRect().center().y())
+            for item in regular
+        ) <= 1e-6, template_name
+
+
 def test_edit_grid_marks_original_geometry_as_a_visible_restore_target():
     """拖动后原始位置仍有可见回归目标，并即时刷新。"""
     _app, win, ctrl = _window()

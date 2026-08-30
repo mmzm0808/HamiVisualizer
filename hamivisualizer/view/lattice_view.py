@@ -598,14 +598,71 @@ class LatticeView(QGraphicsScene):
         (a1x, a1y), (a2x, a2y) = self._cell_vectors
         n1 = max(1, int(round(math.hypot(a1x, a1y) / value)))
         n2 = max(1, int(round(math.hypot(a2x, a2y) / value)))
+        # A nearest integer count is not enough for a basis with rational
+        # fractional coordinates.  For example, graphene's B site is at
+        # ``(u, v)=(1/2, 1/3)``.  A visually plausible 7×7 net would put that
+        # site between targets, which is exactly the ``格点不在网格点上``
+        # impression users reported.  Choose the nearest multiples of the
+        # simple basis denominators, so the visible dots and the snap helper
+        # share an exact target for every shipped lattice.
+        required_1, required_2 = self._required_bravais_denominators()
+
+        def nearest_multiple(target: int, divisor: int) -> int:
+            divisor = max(1, int(divisor))
+            lower = max(divisor, (int(target) // divisor) * divisor)
+            upper = lower + divisor
+            return lower if target - lower <= upper - target else upper
+
+        n1 = nearest_multiple(n1, required_1)
+        n2 = nearest_multiple(n2, required_2)
         # Keep the presentation bounded on an accidentally tiny spacing while
-        # retaining a deterministic, near-square number of targets.
+        # retaining a deterministic, near-square number of targets.  Reduce
+        # one whole denominator-sized block at a time; otherwise the cap could
+        # silently destroy the alignment guarantee just established above.
         while n1 * n2 > 1800:
             if n1 >= n2:
-                n1 = max(1, int(math.ceil(n1 / 1.25)))
+                n1 = max(required_1, n1 - required_1)
             else:
-                n2 = max(1, int(math.ceil(n2 / 1.25)))
+                n2 = max(required_2, n2 - required_2)
         return n1, n2
+
+    def _required_bravais_denominators(self) -> tuple[int, int]:
+        """Find small rational basis fractions that the edit net must contain.
+
+        The grid density remains controlled by ``snap_step``; this helper only
+        protects exact, simple fractions already present in the editable basis
+        (halves, thirds, quarters).  Arbitrary user-dragged coordinates
+        are deliberately ignored unless they are within a tight tolerance of a
+        small rational, so one free-form move cannot unexpectedly change the
+        entire grid density.  The same counts are then consumed by
+        :meth:`_snap_local_point` and :meth:`_draw_snap_grid`.
+        """
+        if not self._edit_cell_constrained or not self._edit_sites:
+            return 1, 1
+        (a1x, a1y), (a2x, a2y) = self._cell_vectors
+        det = a1x * a2y - a1y * a2x
+        if abs(det) < 1e-12:
+            return 1, 1
+        required_1 = required_2 = 1
+        # Denominators beyond 4 describe user-specific fine geometry rather
+        # than a built-in basis and would make a coarse grid unexpectedly
+        # dense.  They remain reachable through the exact-site alignment ring.
+        max_denominator = 4
+        tolerance = 1.0e-7
+        for sx, sy, _sub in self._edit_sites:
+            x, y = float(sx), float(sy)
+            u = (x * a2y - y * a2x) / det
+            v = (a1x * y - a1y * x) / det
+            if not (-tolerance <= u < 1.0 + tolerance
+                    and -tolerance <= v < 1.0 + tolerance):
+                continue
+            fu = Fraction(u).limit_denominator(max_denominator)
+            fv = Fraction(v).limit_denominator(max_denominator)
+            if abs(float(fu) - u) <= tolerance:
+                required_1 = math.lcm(required_1, fu.denominator)
+            if abs(float(fv) - v) <= tolerance:
+                required_2 = math.lcm(required_2, fv.denominator)
+        return required_1, required_2
 
     def _snap_local_point(self, x: float, y: float, step: float) -> tuple[float, float]:
         """Round a local physical point in the same coordinates as the grid."""

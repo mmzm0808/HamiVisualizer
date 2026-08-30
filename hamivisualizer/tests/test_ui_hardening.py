@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsProxyWidget,
     QGraphicsTextItem,
+    QLabel,
     QSplitter,
     QMessageBox,
     QDialog,
@@ -2836,6 +2837,8 @@ def test_edit_canvas_draws_snap_grid_nodes_and_toolbar_spacing_updates_them():
     QApplication.processEvents()
     scene = win.lattice_scene
     assert scene.grid_visible
+    assert win.lattice_grid_btn.text() == "网格点"
+    assert win.lattice_snap_step_widget.findChildren(QLabel)[0].text() == "间距"
     dots = [item for item in scene.items()
             if item.data(0) == "snap-grid-node"]
     assert dots and len(dots) <= 1800

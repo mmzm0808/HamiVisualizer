@@ -147,7 +147,7 @@ class MainWindow(QMainWindow):
             "拖动格点时吸附到网格和精确几何位置；按住 Alt 可临时自由移动"
         )
         self.lattice_grid_btn = QToolButton()
-        self.lattice_grid_btn.setText("网格")
+        self.lattice_grid_btn.setText("网格点")
         self.lattice_grid_btn.setCheckable(True)
         self.lattice_grid_btn.setChecked(True)
         self.lattice_grid_btn.setToolTip(
@@ -165,8 +165,8 @@ class MainWindow(QMainWindow):
         snap_step_layout = QHBoxLayout(self.lattice_snap_step_widget)
         snap_step_layout.setContentsMargins(2, 0, 2, 0)
         snap_step_layout.setSpacing(3)
-        snap_step_label = QLabel("网格")
-        snap_step_label.setToolTip("设置晶格编辑时的网格节点间距和吸附间隔")
+        snap_step_label = QLabel("间距")
+        snap_step_label.setToolTip("设置晶格编辑时的网格节点间距和吸附间隔；数值越小越密")
         self.lattice_snap_step_spin = QDoubleSpinBox()
         self.lattice_snap_step_spin.setRange(0.001, 10.0)
         self.lattice_snap_step_spin.setDecimals(3)
@@ -175,7 +175,7 @@ class MainWindow(QMainWindow):
         self.lattice_snap_step_spin.setSuffix("")
         self.lattice_snap_step_spin.setFixedWidth(78)
         self.lattice_snap_step_spin.setToolTip(
-            "晶格编辑网格节点间距和吸附间隔；例如 0.25 表示每 1/4 个单位一个节点。"
+            "晶格编辑网格节点间距和吸附间隔；数值越小网格越密，例如 0.25 表示每 1/4 个单位一个节点。"
             "关闭吸附时该值保留，重新开启后继续使用。"
         )
         snap_step_layout.addWidget(snap_step_label)

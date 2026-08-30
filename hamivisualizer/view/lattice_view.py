@@ -13,7 +13,7 @@ import math
 from fractions import Fraction
 
 from PySide6.QtCore import (
-    QCoreApplication, QPointF, QRectF, QEvent, QTimer, Qt, Signal,
+    QCoreApplication, QPointF, QRectF, QSizeF, QEvent, QTimer, Qt, Signal,
 )
 from PySide6.QtGui import (
     QColor, QBrush, QFont, QPainterPath, QPen, QPolygonF,
@@ -1606,8 +1606,39 @@ class LatticeView(QGraphicsScene):
             width = _strength_editor_width(editor, editor.text())
             metrics = editor.fontMetrics()
             height = max(26, min(44, int(metrics.height() + 12)))
+            # ``QGraphicsProxyWidget`` can retain a stale fixed height while
+            # the stylesheet has already enlarged the child.  Use the
+            # child's actual post-polish size as the authoritative value;
+            # this branch also covers style engines that add a few pixels
+            # beyond QFontMetrics.height().
+            height = max(height, int(editor.height()))
             if editor.width() != width or editor.height() != height:
                 editor.setFixedSize(width, height)
+                # QGraphicsProxyWidget normally follows its child through
+                # QWidget::resizeEvent, but a global application-font swap
+                # can update the fixed child before Qt delivers that event.
+                # Explicitly mirror the size on the proxy as well; otherwise
+                # the painted editor may be taller than its proxy bounds and
+                # its lower border becomes clipped at 150–180% UI scale.
+                proxy.setMinimumSize(QSizeF(float(width), float(height)))
+                proxy.setMaximumSize(QSizeF(float(width), float(height)))
+                proxy.resize(editor.size())
+                proxy.setGeometry(QRectF(
+                    proxy.geometry().topLeft(),
+                    QSizeF(float(width), float(height)),
+                ))
+            else:
+                # The child may have been resized by QStyle after the last
+                # pass even though our requested dimensions are unchanged.
+                # Mirror the observed widget size unconditionally so proxy
+                # geometry cannot lag by a few style pixels.
+                proxy.setMinimumSize(QSizeF(float(editor.width()), float(editor.height())))
+                proxy.setMaximumSize(QSizeF(float(editor.width()), float(editor.height())))
+                proxy.resize(editor.size())
+                proxy.setGeometry(QRectF(
+                    proxy.geometry().topLeft(),
+                    QSizeF(float(editor.width()), float(editor.height())),
+                ))
 
     def _set_editor_focus_state(self, proxy: QGraphicsProxyWidget, focused: bool) -> None:
         """Keep the focused field above handles and reveal it in the view."""

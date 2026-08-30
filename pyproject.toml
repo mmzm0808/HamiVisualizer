@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "hamivisualizer"
 version = "0.4.0"
 description = "Interactive scalar Hermitian lattice Hamiltonian visualizer"
-readme = "README-v0.3.md"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "numpy>=1.26,<2",

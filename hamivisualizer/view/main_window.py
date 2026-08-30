@@ -1498,6 +1498,11 @@ class MainWindow(QMainWindow):
         # 100% to 180%).  Defer one final fit until that pass completes so a
         # long value cannot regress to an elided ``0....`` label.
         QTimer.singleShot(0, self.panel._fit_param_table_columns)
+        # Embedded lattice coefficient editors are fixed-pixel widgets.  A
+        # stylesheet/font change can deliver their final resize event only
+        # after the first layout pass; reflow once more on the next event-loop
+        # turn so the QGraphicsProxyWidget bounds match the painted child.
+        QTimer.singleShot(0, self.lattice_scene._reflow_editors)
         for group in (
             self.panel.boundary_group, self.panel.params_group, self.panel.energy_group,
             self.panel.display_group, self.panel.sites_group, self.panel.hops_group,

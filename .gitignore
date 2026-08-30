@@ -26,6 +26,9 @@ dist/
 Thumbs.db
 Desktop.ini
 
+# Legacy MATLAB prototype kept locally for reference; do not publish.
+HamiltonVisualizer.m
+
 # Local pytest result dumps
 .codex-artifacts/*.xml
 

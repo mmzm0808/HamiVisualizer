@@ -1643,6 +1643,38 @@ def test_strength_editor_remeasures_after_ui_scale_changes():
     assert editor.height() >= 26
 
 
+def test_strength_proxy_tracks_editor_after_production_font_initialization():
+    """Windows font setup plus a high UI scale must keep the proxy border whole."""
+    from PySide6.QtGui import QFont
+    from hamivisualizer.main import _configure_font
+
+    app, win, ctrl = _window()
+    original_font = QFont(app.font())
+    try:
+        # The normal launcher registers the CJK/math fonts before constructing
+        # MainWindow.  Most lightweight tests intentionally skip that step;
+        # exercise it here so proxy/widget geometry is tested in production
+        # order rather than only with Qt's default Sans Serif metrics.
+        _configure_font(app)
+        ctrl.apply_document(template_document("NP", connectivity="最近邻"))
+        win.resize(1440, 920)
+        win.show()
+        QApplication.processEvents()
+        win._set_ui_scale(1.5, persist=False)
+        QApplication.processEvents()
+        win.lattice_mode_btn.setChecked(True)
+        win.lattice_scene.set_show_all_hop_editors(True)
+        ctrl.fit_all(force=True)
+        QApplication.processEvents()
+        assert win.lattice_scene._edit_proxies
+        for proxy in win.lattice_scene._edit_proxies:
+            editor = proxy.widget()
+            assert proxy.boundingRect().width() >= editor.width()
+            assert proxy.boundingRect().height() >= editor.height()
+    finally:
+        app.setFont(original_font)
+
+
 def test_double_click_on_existing_lattice_content_never_adds_or_deletes():
     QApplication.instance() or QApplication([])
     scene = LatticeView()

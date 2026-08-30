@@ -1931,6 +1931,56 @@ def test_real_press_move_release_drag_updates_site_and_keeps_hops():
         QApplication.processEvents()
 
 
+def test_edit_handle_hit_shape_does_not_cover_neighbouring_sites():
+    """A handle's clickable area must match its disc, not its outline box."""
+    _app, win, ctrl = _window()
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    ctrl.apply_document(template_document(
+        "蜂窝", boundary_kind="semi", nx=4, ny=3,
+        connectivity="最近邻",
+    ))
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    scene, view = win.lattice_scene, win.lattice_gv
+    handles = list(scene._edit_items.items())
+    assert len(handles) >= 2
+    first_index, first = handles[0]
+    second_index, second = handles[1]
+    first_point = first.scenePos()
+    second_point = second.scenePos()
+    # The two primitive-cell sites are one bond length apart.  Only the
+    # handle centred at the queried scene point may be returned as editable.
+    at_first = [item for item in scene.items(first_point)
+                if isinstance(item, type(first))]
+    at_second = [item for item in scene.items(second_point)
+                 if isinstance(item, type(second))]
+    assert [item.site_index for item in at_first] == [first_index]
+    assert [item.site_index for item in at_second] == [second_index]
+    # Also guard the user-visible drag path: a press on the first handle must
+    # not commit a change to the neighbouring row.
+    before = deepcopy(ctrl.current_document()["sites"])
+    point = view.mapFromScene(first_point)
+    QTest.mousePress(view.viewport(), Qt.LeftButton, Qt.NoModifier, point)
+    QApplication.processEvents()
+    moved = point + QPoint(36, 18)
+    device = QPointingDevice.primaryPointingDevice()
+    event = QMouseEvent(
+        QEvent.MouseMove, QPointF(moved), QPointF(moved), QPointF(moved),
+        Qt.NoButton, Qt.LeftButton, Qt.NoModifier,
+        Qt.MouseEventSynthesizedByApplication, device,
+    )
+    QApplication.sendEvent(view.viewport(), event)
+    QApplication.processEvents()
+    QTest.mouseRelease(view.viewport(), Qt.LeftButton, Qt.NoModifier, moved)
+    QApplication.processEvents()
+    after = ctrl.current_document()["sites"]
+    assert after[first_index] != before[first_index]
+    assert after[second_index] == before[second_index]
+
+
 def test_edit_position_constraint_handles_oblique_cells_without_affecting_standalone_scene():
     """Oblique cells clamp in fractional coordinates; lightweight scenes stay free."""
     QApplication.instance() or QApplication([])

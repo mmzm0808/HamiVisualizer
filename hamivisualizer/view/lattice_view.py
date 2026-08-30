@@ -223,6 +223,21 @@ class _EditableSiteItem(QGraphicsEllipseItem):
         painter.drawPath(path)
         painter.restore()
 
+    def shape(self):
+        """Use the visible disc as the hit target, not the cosmetic pen box.
+
+        ``QGraphicsEllipseItem.shape()`` includes the pen when resolving scene
+        hits.  On Qt 6 a cosmetic two-pixel pen can inflate that shape by about
+        one *scene unit* at a zoomed view, even though the painted outline is
+        only two device pixels wide.  Nearby sites then overlap in the hit
+        tester: clicking one handle may select or drag the neighbour.  The
+        outline is presentation-only, so the interaction shape should be the
+        actual disc and remain stable under zoom.
+        """
+        path = QPainterPath()
+        path.addEllipse(self.rect())
+        return path
+
     def mousePressEvent(self, event):
         self._press_pos = self.pos()
         self.setFlag(QGraphicsItem.ItemIsFocusable, True)

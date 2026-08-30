@@ -2699,6 +2699,11 @@ def test_band_axis_is_fixed_physical_kx():
               if isinstance(item, QGraphicsTextItem)]
     assert "k_x" in labels
     assert "kx/π" not in labels
+    from hamivisualizer.view.math_text import MathTextItem
+    math_axis = [item for item in scene.items()
+                 if isinstance(item, MathTextItem) and item.data(1) == "axis"]
+    assert any(item.layout.source == "k_x" and item.isVisible()
+               for item in math_axis)
     assert scene._mark_item is not None
     assert scene._mark_item.line().x1() == pytest.approx(np.pi / 2)
 

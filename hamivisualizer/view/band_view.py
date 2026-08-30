@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QGraphicsTextItem,
 )
 
+from .math_text import MathTextItem, math_font
 from .rendermodel import BandSceneData
 
 
@@ -117,12 +118,25 @@ class BandView(QGraphicsScene):
             tick.setPos(value - 0.12, self._y1 - 0.35)
             tick.setData(1, "axis")
             self.addItem(tick)
-        xlabel = QGraphicsTextItem("k_x")
-        xlabel.setFont(axis_font)
+        # Reuse the same parsed math layout as matrix cells.  A plain
+        # ``QGraphicsTextItem("k_x")`` renders the underscore literally,
+        # which makes the x appear at the baseline instead of as a true
+        # subscript.  The math item keeps the label readable at every view
+        # zoom while ``ItemIgnoresTransformations`` preserves the UI-sized
+        # axis typography.
+        xlabel = MathTextItem(r"k_x", math_font(12), tick_color)
         xlabel.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
         xlabel.setPos(x1 - 0.45, self._y1 - 0.85)
         xlabel.setData(1, "axis")
+        xlabel.setToolTip("横坐标 kₓ（弧度）")
         self.addItem(xlabel)
+        # Keep a non-rendering plain-text semantic node for integrations that
+        # historically discover axis labels through QGraphicsTextItem.  It
+        # is deliberately hidden so it cannot duplicate the math glyphs.
+        xlabel_compat = QGraphicsTextItem("k_x")
+        xlabel_compat.setVisible(False)
+        xlabel_compat.setData(1, "axis")
+        self.addItem(xlabel_compat)
         ylabel = QGraphicsTextItem("E")
         ylabel.setFont(axis_font)
         ylabel.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)

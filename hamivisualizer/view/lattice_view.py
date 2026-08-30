@@ -718,6 +718,17 @@ class LatticeView(QGraphicsScene):
             for sx, sy, _sub in self._edit_sites:
                 tx = float(sx) + anchor_x
                 ty = -float(sy) - anchor_y
+                target = QPointF(tx, ty)
+                if not rect.contains(target):
+                    continue
+                if abs(cell_det) >= 1e-12:
+                    local_x = tx - anchor_x
+                    local_y = -ty - anchor_y
+                    u = (local_x * a2y - local_y * a2x) / cell_det
+                    v = (a1x * local_y - a1y * local_x) / cell_det
+                    if not (-1e-9 <= u < 1.0 - 1e-9
+                            and -1e-9 <= v < 1.0 - 1e-9):
+                        continue
                 nearest = min(
                     (math.hypot(tx - gx, ty - gy) for gx, gy in regular_centers),
                     default=float("inf"),

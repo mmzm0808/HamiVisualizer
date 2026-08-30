@@ -28,6 +28,7 @@ Desktop.ini
 
 # Legacy MATLAB prototype kept locally for reference; do not publish.
 HamiltonVisualizer.m
+*.baiduyun.uploading.cfg
 
 # Local pytest result dumps
 .codex-artifacts/*.xml

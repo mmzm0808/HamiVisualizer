@@ -1483,6 +1483,15 @@ class LatticeView(QGraphicsScene):
             height = max(26, min(36, int(styled_height)))
             editor.setFixedSize(width, height)
             editor.setAlignment(Qt.AlignCenter)
+            # A newly created QLineEdit puts its cursor at the end of the
+            # constructor text.  When the field is center-aligned, Qt can
+            # retain that end-of-text horizontal scroll offset even while
+            # the field is unfocused.  After a fraction commit this made a
+            # perfectly wide ``0.33333333`` field paint as ``).3333333`` at
+            # high UI scale.  Start rebuilt editors at the beginning so the
+            # complete value is visible; user typing still controls the
+            # cursor once the field receives focus.
+            editor.setCursorPosition(0)
             # Do not install QDoubleValidator here: it rejects the perfectly
             # valid ``1/3`` form while the side-panel parameter editor accepts
             # it.  Validation is performed on commit by the shared safe

@@ -1675,6 +1675,31 @@ def test_strength_proxy_tracks_editor_after_production_font_initialization():
         app.setFont(original_font)
 
 
+def test_rebuilt_fraction_editor_keeps_leading_zero_visible_at_large_scale():
+    """A committed fraction must not reopen with its first glyph scrolled away."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    win.resize(1440, 920)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    win.lattice_scene.set_show_all_hop_editors(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    editor = win.lattice_scene._edit_proxies[0].widget()
+    editor.setText("1/3")
+    win.lattice_scene._commit_hop_strength(0, editor)
+    QApplication.processEvents()
+    win._set_ui_scale(1.8, persist=False)
+    win._set_theme_mode("dark")
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+    rebuilt = win.lattice_scene._edit_proxies[0].widget()
+    assert rebuilt.text().startswith("0.")
+    assert rebuilt.cursorPosition() == 0
+    assert rebuilt.fontMetrics().horizontalAdvance(rebuilt.text()) <= rebuilt.width() - 20
+
+
 def test_double_click_on_existing_lattice_content_never_adds_or_deletes():
     QApplication.instance() or QApplication([])
     scene = LatticeView()

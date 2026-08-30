@@ -1234,15 +1234,57 @@ class LatticeView(QGraphicsScene):
         return True
 
     def _append_site_at(self, scene_point: QPointF) -> None:
-        """Emit one local primitive-cell coordinate for the explicit tool."""
-        step = self.snap_step
+        """Emit one valid local coordinate for the explicit site tool.
+
+        Site creation used to round every click, even after the user had
+        turned ``吸附`` off, and it forwarded clicks outside an oblique
+        primitive cell to the panel.  The next rebuild then rejected the
+        model, which looked like a newly added point (or an existing bond)
+        had mysteriously disappeared.  Keep creation on the same validity
+        contract as dragging: optional grid rounding, strict cell bounds,
+        and a small duplicate/overlap guard before emitting the signal.
+        """
+        scene_point = QPointF(scene_point)
         anchor_x, anchor_y = self._edit_anchor_offset
-        x = round((scene_point.x() - anchor_x) / step) * step
-        y = round((-scene_point.y() - anchor_y) / step) * step
+        x = float(scene_point.x() - anchor_x)
+        y = float(-scene_point.y() - anchor_y)
+        if self.snap_enabled:
+            step = max(0.001, float(self.snap_step))
+            x = round(x / step) * step
+            y = round(y / step) * step
+
+        # A site table stores local primitive-cell coordinates.  Reject an
+        # invalid click with an actionable status message instead of silently
+        # clamping it to an edge or letting the later Hamiltonian rebuild fail.
+        if self._edit_cell_constrained:
+            (a1x, a1y), (a2x, a2y) = self._cell_vectors
+            det = a1x * a2y - a1y * a2x
+            if abs(det) >= 1e-12:
+                u = (x * a2y - y * a2x) / det
+                v = (a1x * y - a1y * x) / det
+                if not (-1e-9 <= u < 1.0 - 1e-9
+                        and -1e-9 <= v < 1.0 - 1e-9):
+                    self.editSelectionChanged.emit(
+                        "添加失败：请在蓝色原始元胞范围内点击；元胞外坐标不会写入模型"
+                    )
+                    return
+
+        candidate = QPointF(anchor_x + x, -(anchor_y + y))
+        clearance = self._edit_collision_tolerance()
+        if any(
+            math.hypot(candidate.x() - live.x(), candidate.y() - live.y())
+            <= clearance
+            for _owner, live in self._edit_live_positions()
+        ):
+            self.editSelectionChanged.emit(
+                "添加失败：该位置与已有格点过近，请换一个网格节点"
+            )
+            return
         self.set_site_creation_mode(False, announce=False)
         self.siteAddRequested.emit(float(x), float(y))
+        mode = "吸附" if self.snap_enabled else "自由"
         self.editSelectionChanged.emit(
-            f"已添加格点 ({x:g}, {y:g})；拖动可调整，表格可精确检查"
+            f"已添加格点 ({x:g}, {y:g})（{mode}位置）；拖动可调整，表格可精确检查"
         )
 
     def mousePressEvent(self, event):

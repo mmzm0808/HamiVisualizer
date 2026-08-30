@@ -1867,7 +1867,31 @@ class ControlPanel(QWidget):
         self._emit_changed()
 
     def append_site(self, x: float, y: float, sublattice: str = "A"):
-        self._add_row(self.site_table, [float(x), float(y), sublattice])
+        """Append a site with the same finite/duplicate guard as canvas edits.
+
+        The canvas normally validates before emitting ``siteAddRequested``;
+        this second gate protects integrations and synthetic events that call
+        the panel slot directly, so a malformed coordinate cannot enter the
+        table and make the next rebuild appear to drop the lattice.
+        """
+        try:
+            x_value, y_value = float(x), float(y)
+        except (TypeError, ValueError, OverflowError):
+            self.set_error("格点坐标必须是有限数值")
+            return
+        if not (math.isfinite(x_value) and math.isfinite(y_value)):
+            self.set_error("格点坐标必须是有限数值")
+            return
+        for row in self._refresh_site_table_rows():
+            try:
+                old_x = float(self._cell(self.site_table, row, 0))
+                old_y = float(self._cell(self.site_table, row, 1))
+            except (TypeError, ValueError):
+                continue
+            if math.hypot(x_value - old_x, y_value - old_y) <= 1e-9:
+                self.set_error("格点坐标不能重复；请换一个位置")
+                return
+        self._add_row(self.site_table, [x_value, y_value, sublattice])
 
     def remove_site(self, index: int):
         """Remove a site and all incident hops; reindex remaining endpoints."""

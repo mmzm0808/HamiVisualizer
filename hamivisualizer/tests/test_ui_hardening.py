@@ -1893,7 +1893,12 @@ def test_blank_canvas_site_creation_requires_the_explicit_tool():
     QApplication.processEvents()
     scene, view = win.lattice_scene, win.lattice_gv
     before = win.panel.site_table.rowCount()
-    target = QPointF(0.45, -0.55)
+    # Add inside the highlighted editable primitive cell.  The old test used
+    # an arbitrary canvas coordinate that happened to be outside SC's
+    # translated cell; accepting it would reintroduce the invalid-coordinate
+    # bug this interaction contract is meant to prevent.
+    anchor_x, anchor_y = scene.edit_anchor_offset
+    target = QPointF(anchor_x + 0.25, -(anchor_y + 0.25))
     point = view.mapFromScene(target)
 
     QTest.mouseDClick(view.viewport(), Qt.LeftButton, pos=point)
@@ -1922,6 +1927,10 @@ def test_blank_canvas_site_creation_requires_the_explicit_tool():
 
     win.lattice_add_site_btn.setChecked(True)
     QApplication.processEvents()
+    # Arming the tool can reflow the top action strip, so resolve the scene
+    # coordinate after the layout settles rather than reusing a stale viewport
+    # pixel from the pre-tool geometry.
+    point = view.mapFromScene(target)
     QTest.mouseClick(view.viewport(), Qt.LeftButton, pos=point)
     QApplication.processEvents()
     assert win.panel.site_table.rowCount() == before + 1
@@ -2856,6 +2865,61 @@ def test_edit_canvas_draws_snap_grid_nodes_and_toolbar_spacing_updates_them():
     win.lattice_grid_btn.setChecked(True)
     assert scene.grid_visible
     assert any(item.data(0) == "snap-grid-node" for item in scene.items())
+
+
+def test_site_creation_respects_snap_toggle_and_rejects_invalid_or_duplicate_points():
+    """添加格点不应绕过吸附开关、元胞边界或重复坐标校验。"""
+    QApplication.instance() or QApplication([])
+
+    scene = LatticeView()
+    scene.set_edit_context(
+        [(0.1, 0.1, "A")],
+        cell_vectors=((1.0, 0.0), (0.0, 1.0)),
+        snap_step=0.25,
+    )
+    scene.set_edit_mode(True)
+    scene.set_data(LatticeSceneData(
+        sites=((0.1, 0.1, "1", "A"),),
+    ))
+    added = []
+    messages = []
+    scene.siteAddRequested.connect(lambda x, y: added.append((x, y)))
+    scene.editSelectionChanged.connect(messages.append)
+
+    # With snapping disabled, preserve the actual pointer coordinate instead
+    # of silently rounding it to the toolbar step.
+    scene.set_snap_enabled(False)
+    scene._append_site_at(QPointF(0.37, -0.41))
+    assert added[-1] == pytest.approx((0.37, 0.41))
+
+    # Re-arm the tool for a snapped point.  The same click now lands on the
+    # visible 0.25 grid, proving the toggle controls creation as well as drag.
+    scene.set_snap_enabled(True)
+    scene._append_site_at(QPointF(0.37, -0.41))
+    assert added[-1] == pytest.approx((0.25, 0.5))
+
+    before = len(added)
+    scene._append_site_at(QPointF(1.2, -0.4))
+    scene.set_snap_enabled(False)
+    scene._append_site_at(QPointF(0.1, -0.1))
+    assert len(added) == before
+    assert any("元胞范围内" in message for message in messages)
+    assert any("已有格点过近" in message for message in messages)
+
+
+def test_panel_append_site_is_a_defensive_finite_duplicate_gate():
+    """直接调用面板槽也不能把 NaN 或重复格点写进表格。"""
+    _app, win, _ctrl = _window()
+    panel = win.panel
+    rows_before = panel.site_table.rowCount()
+    panel.append_site(float("nan"), 0.2)
+    assert panel.site_table.rowCount() == rows_before
+    assert "有限数值" in panel.error_label.text()
+    panel.set_error("")
+    first = panel.get_site_rows()[0]
+    panel.append_site(first[0], first[1])
+    assert panel.site_table.rowCount() == rows_before
+    assert "不能重复" in panel.error_label.text()
 
 
 def test_small_custom_editor_keeps_longer_authored_bond_visible():

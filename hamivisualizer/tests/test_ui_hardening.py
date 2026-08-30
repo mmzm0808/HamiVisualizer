@@ -2753,5 +2753,7 @@ def test_phi_fraction_and_wavefunction_energy_selection():
     assert win.wf_view.selected_energy == pytest.approx(
         energies[np.argmin(np.abs(energies - target))]
     )
+    assert win.wf_view.combo.itemText(0).startswith("#1 ")
     info = win.wf_view.info.text()
     assert "目标 E" in info and "ΔE" in info and "边界" in info
+    assert f"#{win.wf_view.combo.currentIndex() + 1}" in info

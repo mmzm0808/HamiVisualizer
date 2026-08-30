@@ -145,8 +145,13 @@ class WavefunctionView(QWidget):
         self._requested_energy = None
         self.combo.blockSignals(True)
         self.combo.clear()
+        # Keep the numerical index zero-based internally, but present the
+        # conventional one-based state number to users.  Lattice sites and
+        # matrix rulers already use this convention; showing ``#0`` here
+        # made otherwise identical selections look off by one when moving
+        # between the wavefunction and matrix tabs.
         for i, e in enumerate(energies):
-            self.combo.addItem(f"#{i}  E={e:.3f}")
+            self.combo.addItem(f"#{i + 1}  E={e:.3f}")
         self.combo.blockSignals(False)
         if energies.size:
             self.combo.setCurrentIndex(0)
@@ -244,11 +249,11 @@ class WavefunctionView(QWidget):
             character = "体态 / 未见明显边界局域"
         selected = float(data.energies[self._state])
         if self._requested_energy is None:
-            energy_text = f"本征态 #{self._state}，E = {selected:.5g}"
+            energy_text = f"本征态 #{self._state + 1}，E = {selected:.5g}"
         else:
             delta = abs(selected - self._requested_energy)
             energy_text = (
-                f"目标 E = {self._requested_energy:.5g} → #{self._state}，"
+                f"目标 E = {self._requested_energy:.5g} → #{self._state + 1}，"
                 f"E = {selected:.5g}，ΔE = {delta:.2g}"
             )
         summary = (

@@ -483,6 +483,7 @@ def test_kx_slider():
     ctrl.load_preset("NP")
     win.panel.kx_slider.setValue(50)  # kx/π = 0.5
     assert abs(win.panel.get_kx() / np.pi - 0.5) < 0.01
+    assert win.panel.kx_label.text() == "kₓ/π"
 
 
 def test_error_reported():

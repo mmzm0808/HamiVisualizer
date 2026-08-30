@@ -344,7 +344,13 @@ class ControlPanel(QWidget):
         shape_row.addWidget(self.shape_combo, 1)
         b_lay.addLayout(shape_row)
         kx = QHBoxLayout()
-        kx.addWidget(QLabel("kx/π"))
+        # Use the same mathematical glyph as the band axis and matrix
+        # formulas.  A plain ``kx`` makes the x look like a peer character;
+        # the Unicode subscript keeps this compact control readable without
+        # introducing a heavyweight rich-text label.
+        self.kx_label = QLabel("kₓ/π")
+        self.kx_label.setToolTip("横向 Bloch 波矢 kₓ（以 π 为单位）")
+        kx.addWidget(self.kx_label)
         self.kx_slider = QSlider(Qt.Horizontal)
         self.kx_slider.setRange(-100, 100)
         self.kx_slider.setValue(0)
@@ -1246,9 +1252,9 @@ class ControlPanel(QWidget):
         try:
             value = float(self.kx_edit.text())
         except ValueError:
-            raise ValueError("kx/π 不是有效数字") from None
+            raise ValueError("kₓ/π 不是有效数字") from None
         if not math.isfinite(value):
-            raise ValueError("kx/π 必须是有限数值")
+            raise ValueError("kₓ/π 必须是有限数值")
         return value * math.pi
 
     def set_kx(self, v: float):

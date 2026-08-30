@@ -7,7 +7,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QSlider
 from PySide6.QtTest import QTest
 import pytest
 
@@ -204,6 +204,50 @@ def test_model_tabs_keep_independent_documents(tmp_path):
     window.model_bar.setCurrentIndex(0)
     app.processEvents()
     assert window.panel.site_table.rowCount() == 4
+
+
+def test_switching_all_preset_tabs_clears_editors_at_large_ui_scale(tmp_path):
+    """每个预设切换后只保留当前模型的编辑控件，且高缩放仍可点击。"""
+    app, window, _controller = _workspace(tmp_path)
+    for name in TEMPLATE_NAMES[1:]:
+        window._add_template(name)
+    window.resize(1920, 1200)
+    window.show()
+    window._set_ui_scale(1.8, persist=False)
+    app.processEvents()
+
+    for index, name in enumerate(TEMPLATE_NAMES):
+        window.model_bar.setCurrentIndex(index)
+        app.processEvents()
+        window.lattice_mode_btn.setChecked(True)
+        window.lattice_coeff_btn.setChecked(True)
+        app.processEvents()
+        valid_rows = {
+            int(hop.get("row", -1))
+            for hop in window.lattice_scene._editable_hops()
+        }
+        # Switching from NP/SC/Haldane to a compact preset used to leave old
+        # QSlider cell widgets visible over the current parameter row.  Count
+        # only live visible sliders: removed widgets may still be waiting for
+        # Qt's deferred deletion, but they must never remain paintable.
+        visible_sliders = [
+            slider for slider in window.panel.param_table.findChildren(QSlider)
+            if slider.isVisible()
+        ]
+        assert len(visible_sliders) == window.panel.param_table.rowCount(), name
+        proxy_rows = {
+            int(proxy.data(1)) for proxy in window.lattice_scene._edit_proxies
+        }
+        assert proxy_rows.issubset(valid_rows), name
+        viewport = window.lattice_gv.viewport().rect()
+        for proxy in window.lattice_scene._edit_proxies:
+            top_left = window.lattice_gv.mapFromScene(proxy.pos())
+            right = top_left.x() + proxy.widget().width()
+            bottom = top_left.y() + proxy.widget().height()
+            assert top_left.x() >= 0 and right <= viewport.width(), name
+            assert top_left.y() >= 0 and bottom <= viewport.height(), name
+        window.lattice_mode_btn.setChecked(False)
+        app.processEvents()
 
 
 def test_reordering_model_tabs_preserves_active_session_identity(tmp_path):

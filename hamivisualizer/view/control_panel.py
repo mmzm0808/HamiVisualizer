@@ -855,6 +855,21 @@ class ControlPanel(QWidget):
         self._param_names = names
         tbl = self.param_table
         tbl.blockSignals(True)
+        # ``QTableWidget.setRowCount`` removes table cells but does not
+        # reliably dispose embedded widgets on every Qt/platform path.  The
+        # old parameter sliders can therefore remain parented and visible
+        # after switching from a multi-parameter model (NP/SC/Haldane) to a
+        # compact one (Kagome/SSH), painting blue grooves over the current
+        # rows—especially obvious at 180% UI scale.  Detach every old slider
+        # before changing the row count so a model switch leaves exactly one
+        # live control per current parameter.
+        for row in range(tbl.rowCount()):
+            old_slider = tbl.cellWidget(row, 2)
+            if old_slider is not None:
+                tbl.removeCellWidget(row, 2)
+                old_slider.hide()
+                old_slider.setParent(None)
+                old_slider.deleteLater()
         tbl.setRowCount(len(names))
         for r, name in enumerate(names):
             v = float(values.get(name, 1.0))

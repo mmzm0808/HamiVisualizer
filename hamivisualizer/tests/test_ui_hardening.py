@@ -60,6 +60,13 @@ def test_evidence_renderer_rejects_non_100_percent_output_scale():
         _parse_screenshot_ui_scale("1.5")
     with pytest.raises(argparse.ArgumentTypeError, match="100%"):
         _parse_screenshot_ui_scale("1.8")
+    from tools.audit_editor_scales import (
+        EVIDENCE_SCREENSHOT_SCALE, _evidence_path,
+    )
+
+    assert EVIDENCE_SCREENSHOT_SCALE == 1.0
+    assert _evidence_path("np", "dark", 1.0).name == "np-dark-100.png"
+    assert _evidence_path("np", "dark", 1.5) is None
 
 
 def _window():

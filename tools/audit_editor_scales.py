@@ -3,10 +3,14 @@
 该脚本只写入项目自己的 ``.codex-artifacts/screenshots``，不会触碰用户的
 ``~/.hvisual``。除了截图，还会把固定像素的系数输入框映射到视口坐标，
 检查完整边框、互不重叠和不覆盖可见格点，便于在改 QSS 或布局后快速回归。
+
+除 100% 外的倍率只用于几何回归，不会生成截图；项目验收证据始终固定为
+100%，避免把 150%/180% 的历史图误当成当前界面基准。
 """
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 import sys
@@ -28,6 +32,7 @@ from hamivisualizer.view.main_window import MainWindow
 
 OUT = ROOT / ".codex-artifacts" / "screenshots" / "editor-all-scale-theme-audit-20260830"
 SCALES = (0.8, 1.0, 1.5, 1.8)
+EVIDENCE_SCREENSHOT_SCALE = 1.0
 THEMES = ("light", "dark")
 
 
@@ -79,6 +84,15 @@ def _assert_editor_geometry(window: MainWindow, name: str, scale: float, theme: 
         )
 
 
+def _evidence_path(stem: str, theme: str, scale: float) -> Path | None:
+    """Return a screenshot path only for the canonical 100% evidence scale."""
+    if not math.isclose(
+        float(scale), EVIDENCE_SCREENSHOT_SCALE, rel_tol=0.0, abs_tol=1e-12,
+    ):
+        return None
+    return OUT / f"{stem}-{theme}-100.png"
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     app = QApplication.instance() or QApplication([])
@@ -89,7 +103,8 @@ def main() -> None:
     # include it so this audit covers both the ordinary six-site supercell and
     # the three-site oblique nanodisk representation.
     names.append("Kagome三角盘")
-    total = 0
+    checked = 0
+    saved = 0
     for name in names:
         window = MainWindow()
         ctrl = ViewController(window)
@@ -118,14 +133,15 @@ def main() -> None:
                 print(f"checking={name} scale={scale:g} theme={theme}", flush=True)
                 window.lattice_scene._refresh_editor_sizes()
                 _assert_editor_geometry(window, name, scale, theme)
-                pct = round(scale * 100)
-                path = OUT / f"{stem}-{theme}-{pct}.png"
-                assert window.grab().save(str(path)), path
-                total += 1
+                checked += 1
+                path = _evidence_path(stem, theme, scale)
+                if path is not None:
+                    assert window.grab().save(str(path)), path
+                    saved += 1
         window.close()
         window.deleteLater()
         app.processEvents()
-    print(f"saved={total} output={OUT}")
+    print(f"checked={checked} saved={saved} evidence_scale=100% output={OUT}")
 
 
 if __name__ == "__main__":

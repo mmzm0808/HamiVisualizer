@@ -1032,16 +1032,36 @@ class MainWindow(QMainWindow):
                 return
             if answer == QMessageBox.Save and not self._save_session(session, False):
                 return
+        active_session = (
+            self._sessions[self._active_index]
+            if 0 <= self._active_index < len(self._sessions)
+            else None
+        )
+        closing_active = session is active_session or len(self._sessions) == 1
         if len(self._sessions) == 1:
             self._add_session("空白自定义", template_document("空白自定义", connectivity="仅格点"))
+            # The fallback tab is now the only session that must remain
+            # active after removing the original final tab.
+            active_session = self._sessions[-1]
         self.model_bar.blockSignals(True)
         self.model_bar.removeTab(index)
         del self._sessions[index]
         self.model_bar.blockSignals(False)
-        target = min(index, len(self._sessions) - 1)
-        self._active_index = -1
-        self.model_bar.setCurrentIndex(target)
-        self._switch_model(target)
+        if closing_active:
+            # Closing the current tab selects the next tab at the same
+            # position, or the previous tab when the closed tab was last.
+            target = min(index, len(self._sessions) - 1)
+            self._active_index = -1
+            self.model_bar.setCurrentIndex(target)
+            self._switch_model(target)
+        else:
+            # Closing a background tab must not change the calculation/model
+            # shown in the editor.  Its object identity survives index shifts
+            # caused by removing a tab to its left.
+            target = self._sessions.index(active_session)
+            self._active_index = target
+            if self.model_bar.currentIndex() != target:
+                self.model_bar.setCurrentIndex(target)
         self._refresh_comparison_models()
 
     def _rename_model(self, index: int):
@@ -1228,7 +1248,12 @@ class MainWindow(QMainWindow):
             self._dirty = False
             self.setWindowTitle(self._base_title)
         self._refresh_model_tab(self._sessions.index(session))
-        self.statusBar().showMessage(f"模型已保存：{path}")
+        # A workspace path can be deeply nested (and may be very long on
+        # Windows).  Keep the transient status message compact so it remains
+        # readable at 150–180% UI scale; the full path is still available on
+        # hover for users who need it.
+        self.statusBar().setToolTip(str(path))
+        self.statusBar().showMessage(f"模型已保存：{path.name}")
         self._save_workspace_state()
         return True
 

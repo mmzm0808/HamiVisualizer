@@ -7,7 +7,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtTest import QTest
 import pytest
 
@@ -221,6 +221,66 @@ def test_reordering_model_tabs_preserves_active_session_identity(tmp_path):
     assert [window.model_bar.tabText(i) for i in range(2)] == ["SC", "NP"]
     assert window._active_index == 0
     assert window._sessions[window._active_index].meta.name == "SC"
+
+
+def test_closing_background_tab_keeps_current_model(tmp_path):
+    """Closing a non-current tab must not jump to its neighbour."""
+    app, window, _controller = _workspace(tmp_path)
+    window._add_template("SC")
+    window._add_template("Kagome")
+    app.processEvents()
+    window.model_bar.setCurrentIndex(0)  # NP remains the active model.
+    app.processEvents()
+
+    window._close_model(2)  # Close the background tab to the right.
+    app.processEvents()
+
+    assert [session.meta.name for session in window._sessions] == ["NP", "SC"]
+    assert window._active_index == 0
+    assert window._sessions[window._active_index].meta.name == "NP"
+    assert window.model_bar.currentIndex() == 0
+
+
+def test_closing_last_model_leaves_one_active_blank_tab(tmp_path):
+    """The final close action leaves a usable blank workspace tab."""
+    app, window, _controller = _workspace(tmp_path)
+    window._close_model(0)
+    app.processEvents()
+
+    assert len(window._sessions) == 1
+    assert window._active_index == 0
+    assert window._sessions[0].meta.name == "空白自定义"
+    assert window.model_bar.count() == 1
+    assert window.model_bar.currentIndex() == 0
+
+
+def test_save_status_uses_filename_and_keeps_full_path_in_tooltip(tmp_path):
+    """Long workspace paths must not overflow the status bar at high scale."""
+    _app, window, _controller = _workspace(tmp_path)
+    session = window._sessions[window._active_index]
+    assert window._save_session(session, False)
+
+    saved_path = Path(session.meta.path)
+    assert window.statusBar().currentMessage() == f"模型已保存：{saved_path.name}"
+    assert window.statusBar().toolTip() == str(saved_path)
+
+
+def test_cancelled_close_keeps_dirty_model_and_tab(tmp_path, monkeypatch):
+    """Cancel in the unsaved-changes prompt must leave the tab untouched."""
+    app, window, _controller = _workspace(tmp_path)
+    window.preferences.autosave = False
+    window.set_dirty(True)
+    monkeypatch.setattr(
+        QMessageBox, "question", lambda *args, **kwargs: QMessageBox.Cancel
+    )
+
+    window._close_model(0)
+    app.processEvents()
+
+    assert len(window._sessions) == 1
+    assert window._active_index == 0
+    assert window._sessions[0].meta.dirty is True
+    assert window.model_bar.tabText(0).startswith("• ")
 
 
 def test_kagome_triangle_menu_action_creates_explicit_flat_edge_nanodisk(tmp_path):

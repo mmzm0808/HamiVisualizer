@@ -37,20 +37,37 @@ def _configure_font(app):
     """Load stable UI and math fonts explicitly when Qt finds no system fonts."""
     from PySide6.QtGui import QFont, QFontDatabase
 
-    preferred = ("Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "SimSun")
+    # Noto Sans SC is preferred when available because it has complete CJK
+    # coverage in Qt's off-screen/Fusion path.  Some Windows installations
+    # expose Microsoft YaHei in the font database but still fall back to tofu
+    # glyphs when the application runs without a native windowing backend.
+    preferred = ("Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", "SimSun")
     installed = set(QFontDatabase.families())
     family = next((name for name in preferred if name in installed), None)
     if family is None and sys.platform == "win32":
         font_dir = Path("C:/Windows/Fonts")
-        for filename in ("msyh.ttc", "msyhbd.ttc", "simsun.ttc"):
+        # Register all candidates before selecting one; loading only the first
+        # file (historically msyh.ttc) can leave CJK glyph fallback unreliable
+        # in headless Qt even though the family reports valid metrics.
+        for filename in (
+            "Noto Sans SC (TrueType).otf",
+            "NotoSansSC-VF.ttf",
+            "msyh.ttc",
+            "msyhbd.ttc",
+            "simsun.ttc",
+        ):
             path = font_dir / filename
             if not path.exists():
                 continue
             font_id = QFontDatabase.addApplicationFont(str(path))
             families = QFontDatabase.applicationFontFamilies(font_id)
-            if families:
-                family = families[0]
-                break
+            if family is None:
+                for candidate in preferred:
+                    if candidate in families:
+                        family = candidate
+                        break
+                if family is None and families:
+                    family = families[0]
     if family:
         app.setFont(QFont(family, 10))
     # Matrix expressions use a dedicated math face. Registering the system

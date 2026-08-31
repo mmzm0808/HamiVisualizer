@@ -6,6 +6,9 @@ from dataclasses import dataclass
 import math
 from typing import Any
 
+KNOWN_PHASE_MODES = frozenset({"none", "phase", "directional"})
+SUPPORTED_PHASE_MODES = frozenset({"none", "phase"})
+
 
 @dataclass(frozen=True)
 class HoppingTerm:
@@ -44,7 +47,7 @@ class HoppingTerm:
             or any(isinstance(v, bool) or not isinstance(v, int) for v in self.cell_offset)
         ):
             raise ValueError(f"cell_offset 必须是两个整数, 得到 {self.cell_offset!r}")
-        if self.phase_mode not in {"none", "phase", "directional"}:
+        if self.phase_mode not in KNOWN_PHASE_MODES:
             raise ValueError(f"未知 phase_mode: {self.phase_mode!r}")
         if self.phase_sign not in {-1, 1}:
             raise ValueError(f"phase_sign 必须是 +1 或 -1, 得到 {self.phase_sign!r}")

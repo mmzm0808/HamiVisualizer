@@ -16,6 +16,7 @@ from fractions import Fraction
 
 from ..model.expression import evaluate_expression, parse_expression
 from ..model.persistence import MAX_NX, MAX_NY
+from ..model.hopping import SUPPORTED_PHASE_MODES
 from ..model.boundary import (
     BoundaryKind, SHAPE_DISK, SHAPE_HEXAGON, SHAPE_RECTANGLE, SHAPE_TRIANGLE,
 )
@@ -575,7 +576,8 @@ class ControlPanel(QWidget):
         self.hop_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.hop_table.setToolTip(
             "每行是一条 Hermitian 物理键；反向共轭由程序自动补全。"
-            "dx=0 且 dy=0 为胞内；任一非零为胞间。phase_mode 仅允许 none / phase。"
+            "dx=0 且 dy=0 为胞内；任一非零为胞间。phase_mode 支持 none / phase；"
+            "directional 仅作为旧文件的预留值保留，不能计算。"
         )
         self.hop_relation_hint = QLabel()
         self.hop_relation_hint.setWordWrap(True)
@@ -1558,14 +1560,13 @@ class ControlPanel(QWidget):
                 return int(text)
 
             phase_mode = vals[6].strip() or "none"
-            if phase_mode == "directional":
+            if phase_mode not in SUPPORTED_PHASE_MODES:
+                if phase_mode == "directional":
+                    detail = "directional 是预留·不可计算模式；请改为 none（实跃迁）或 phase（固定相位）"
+                else:
+                    detail = f"phase_mode 无效：{phase_mode!r}"
                 raise ValueError(
-                    f"跃迁表第 {r + 1} 行使用了尚未支持的方向依赖相位模式 "
-                    "directional；请改用 none（实跃迁）或 phase（固定相位）"
-                )
-            if phase_mode not in {"none", "phase"}:
-                raise ValueError(
-                    f"跃迁表第 {r + 1} 行 phase_mode 无效：{phase_mode!r}"
+                    f"跃迁表第 {r + 1} 行 {detail}"
                 )
             sign = integer(8, "sign", "1")
             if sign not in {-1, 1}:
@@ -1685,6 +1686,12 @@ class ControlPanel(QWidget):
                     if item is not None:
                         item.setToolTip(relation)
                 self._style_hop_row(row, relation, relation_kind)
+                mode_item = table.item(row, 6)
+                if mode_item is not None and mode_item.text().strip() == "directional":
+                    mode_item.setToolTip(
+                        "预留·不可计算（旧模型兼容值）；请改为 none（实跃迁）或 "
+                        "phase（固定相位）后再计算。"
+                    )
         finally:
             table.blockSignals(previous_blocked)
             self._updating_hop_relation = False

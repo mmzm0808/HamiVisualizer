@@ -37,7 +37,7 @@ from PySide6.QtWidgets import QAbstractItemView, QDialog, QFileDialog, QMessageB
 from .model.boundary import Boundary, BoundaryKind
 from .model.expression import evaluate_expression, parse_expression
 from .model.hamiltonian import HamiltonianBuilder, wavefunctions
-from .model.hopping import HoppingTerm
+from .model.hopping import HoppingTerm, SUPPORTED_PHASE_MODES
 from .model.lattice import Lattice, Site
 from .model.persistence import (
     hop_dict_to_row,
@@ -431,8 +431,13 @@ class ViewController(QObject):
         hops = []
         for h in self.window.panel.get_hop_rows():
             pm = h["phase_mode"]
-            if pm == "directional":
-                raise ValueError("phase_mode='directional' 尚未实现, 请改用 'none' 或 'phase'")
+            if pm not in SUPPORTED_PHASE_MODES:
+                if pm == "directional":
+                    raise ValueError(
+                        "phase_mode='directional' 是预留·不可计算的旧模式，"
+                        "请改为 'none' 或 'phase' 后再计算"
+                    )
+                raise ValueError(f"未知 phase_mode: {pm!r}")
             if symbolic:
                 amp = self._eval_sym(h["amplitude"])
                 ph = self._eval_sym(h["phase"]) if pm == "phase" else 0

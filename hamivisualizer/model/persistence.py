@@ -33,6 +33,7 @@ from typing import Any
 
 from .expression import parse_expression
 from .boundary import BOUNDARY_SHAPES, SHAPE_RECTANGLE
+from .hopping import KNOWN_PHASE_MODES
 
 FORMAT_VERSION = 1
 MAX_SITES = 256
@@ -141,7 +142,7 @@ def validate_model_dict(obj: Any) -> dict:
         from_site = _integer(hop.get("from_site"), f"hops[{i}].from_site", 0, len(sites) - 1)
         to_site = _integer(hop.get("to_site"), f"hops[{i}].to_site", 0, len(sites) - 1)
         phase_mode = hop.get("phase_mode", "none")
-        if phase_mode not in {"none", "phase", "directional"}:
+        if phase_mode not in KNOWN_PHASE_MODES:
             raise ValueError(f"hops[{i}].phase_mode 无效: {phase_mode!r}")
         # Keep old documents loadable so the user can inspect and repair them,
         # but make the unsupported mode explicit instead of silently treating

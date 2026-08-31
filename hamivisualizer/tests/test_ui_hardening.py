@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsPixmapItem,
     QGraphicsProxyWidget,
+    QGraphicsRectItem,
     QGraphicsTextItem,
     QLabel,
     QSplitter,
@@ -1057,6 +1058,23 @@ def test_matrix_cell_click_selects_readable_cell_and_reports_detail():
     assert scene._selection_item is not None
     assert scene._selection_item.data(0) == "matrix-selection"
     assert scene.cell_details(0, 0) == ("H[1,1]", "H[1,1]", "1.00")
+
+
+def test_matrix_tooltips_use_one_based_coordinates():
+    """矩阵元悬停提示不能泄漏内部零基数组下标。"""
+    QApplication.instance() or QApplication([])
+    scene = MatrixView()
+    matrix = np.array([[1.0, -2.0], [-2.0, 1.0]])
+    scene.set_data(MatrixSceneData(
+        n=2, values=matrix, matrix=matrix, mode="numeric",
+    ))
+    rects = [item for item in scene.items() if isinstance(item, QGraphicsRectItem)]
+    tooltips = [item.toolTip() for item in rects if item.toolTip()]
+    coordinates = {tip.partition(" = ")[0] for tip in tooltips}
+    assert {"H[1,1]", "H[2,2]"}.issubset(coordinates)
+    assert all(not re.match(r"H\[(?:0,|\d+,0\])", value) for value in coordinates)
+    text_tooltips = [item.toolTip() for item in scene._text_items if item.toolTip()]
+    assert any(tip.startswith("H[1,1] = ") for tip in text_tooltips)
 
 
 def test_matrix_cell_click_does_not_arm_canvas_pan():

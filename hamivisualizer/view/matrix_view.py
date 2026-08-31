@@ -171,7 +171,10 @@ class MatrixView(QGraphicsScene):
                 item.setData(0, (i, j))
                 t = texts[i][j]
                 if t:
-                    item.setToolTip(f"H[{i},{j}] = {t}")
+                    # Matrix arrays stay zero-based internally, but every
+                    # user-facing coordinate (status, copy, tooltip and
+                    # rulers) follows the conventional one-based notation.
+                    item.setToolTip(f"H[{i + 1},{j + 1}] = {t}")
                 self.addItem(item)
 
         # 小矩阵直接创建；中等矩阵等用户放大到足够阅读时再懒加载。
@@ -433,7 +436,7 @@ class MatrixView(QGraphicsScene):
                 ti.setPos(x + (self._cell_size - br.width() * fit) / 2,
                           y + (self._cell_size - br.height() * fit) / 2)
                 ti.setData(0, ("matrix-text", i, j))
-                ti.setToolTip(f"H[{i},{j}] = {t}")
+                ti.setToolTip(f"H[{i + 1},{j + 1}] = {t}")
                 self.addItem(ti)
                 self._text_items.append(ti)
 

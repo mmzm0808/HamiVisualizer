@@ -1066,15 +1066,22 @@ class LatticeView(QGraphicsScene):
             self.set_data(self._data)
 
     def activate_hop_editor(self, row: int) -> None:
-        """Expose the one on-canvas coefficient field for a clicked bond."""
-        rows = {int(hop.get("row", -1)) for hop in self._editable_hops()}
-        if int(row) not in rows:
+        """Expose the canvas field for any row in an equivalent relation."""
+        representative = self._editor_representative_for_row(row)
+        if representative is None:
             return
-        self._active_hop_row = int(row)
+        representative_row = int(representative.get("row", row))
+        self._active_hop_row = representative_row
         if self._data is not None:
             self.set_data(self._data)
+        merged_rows = tuple(representative.get("_editor_rows", (row,)))
+        suffix = (
+            f"（等价表格行：{', '.join(str(value + 1) for value in merged_rows)}）"
+            if len(merged_rows) > 1 else ""
+        )
         self.editSelectionChanged.emit(
-            f"已选跃迁 {int(row) + 1}；在键旁输入强度，或在左侧表格精确编辑"
+            f"已选跃迁 {representative_row + 1}{suffix}；"
+            "在键旁输入强度，或在左侧表格精确编辑"
         )
 
     def update_hop_strength(self, row: int, strength: float) -> None:
@@ -1086,12 +1093,15 @@ class LatticeView(QGraphicsScene):
         controller accepts a value prevents a freshly applied stylesheet from
         restoring the old coefficient on screen.
         """
-        target = int(row)
+        representative = self._editor_representative_for_row(row)
+        rows = (
+            {int(value) for value in representative.get("_editor_rows", ())}
+            if representative is not None else {int(row)}
+        )
         value = float(strength)
         for hop in self._edit_hops:
-            if int(hop.get("row", -1)) == target:
+            if int(hop.get("row", -1)) in rows:
                 hop["strength"] = value
-                return
 
     def set_edit_context(self, sites, *, hops=(), cell_vectors=None,
                          snap_step: float | None = None,
@@ -2036,6 +2046,21 @@ class LatticeView(QGraphicsScene):
             item["_editor_rows"] = (row,)
             representatives.append(item)
         return representatives
+
+    def _editor_representative_for_row(self, row: int) -> dict | None:
+        """Resolve any table row to the representative canvas editor.
+
+        The table intentionally keeps every directed/repeated row. Canvas
+        controls may collapse an equivalent group, so callers must not assume
+        that the selected table row is itself the proxy's row identity.
+        """
+        target = int(row)
+        for representative in self._editor_representative_hops(
+            self._editable_hops()
+        ):
+            if target in tuple(representative.get("_editor_rows", ())):
+                return representative
+        return None
 
     def _primary_editable_rows(self, hops: list[dict]) -> set[int]:
         """Rows in the shortest non-onsite geometrical hopping shell.

@@ -732,6 +732,11 @@ def main() -> int:
     QApplication.processEvents()
     if args.show_all_hop_editors:
         window.lattice_coeff_btn.setChecked(True)
+    if args.reverse_offset_demo:
+        # Exercise the table-row-to-representative mapping: activate the
+        # reverse (second) row and verify it resolves to the single canvas
+        # editor for the physical +1-cell bond.
+        window.lattice_scene.activate_hop_editor(1)
     if args.select_hop_row is not None:
         window.lattice_scene.activate_hop_editor(args.select_hop_row)
     controller.fit_all(force=True)

@@ -1649,6 +1649,13 @@ def test_edit_strength_rail_keeps_multiple_bonds_on_the_right_without_drift():
          "name": "t", "amplitude": "-4*t", "phase_mode": "none", "phase": "0"},
     ]
     assert len(scene._editor_representative_hops(ratio_rows)) == 1
+    # A table/plugin event may address the second equivalent row. It must
+    # still open and update the single representative editor/context.
+    scene.activate_hop_editor(1)
+    assert scene.active_hop_row == 0
+    scene.update_hop_strength(1, 0.75)
+    assert all(hop.get("strength") == pytest.approx(0.75)
+               for hop in scene._edit_hops if int(hop.get("row", -1)) in {0, 1})
     # Both fields are in one stable right-hand rail; they must not drift by
     # inheriting the preceding hop's cell anchor.
     assert len({round(proxy.pos().x(), 6) for proxy in scene._edit_proxies}) == 1

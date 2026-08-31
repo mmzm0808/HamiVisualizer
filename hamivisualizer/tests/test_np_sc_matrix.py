@@ -9,6 +9,7 @@ import numpy as np
 from hamivisualizer.model.boundary import Boundary, BoundaryKind
 from hamivisualizer.model.hamiltonian import HamiltonianBuilder
 from hamivisualizer.model.presets import NP, SC
+from hamivisualizer.model.templates import TEMPLATE_NAMES, template_document
 
 from reference_matlab import ref_build_np_ribbon, ref_build_sc_ribbon
 
@@ -197,3 +198,87 @@ def test_wavefunctions_choose_edge_localized_basis_inside_exact_degeneracy():
         for state in range(2)
     ])
     assert np.allclose(np.sort(weights), [0.0, 1.0], atol=1e-12)
+
+
+def test_edge_mask_follows_slanted_disk_boundary_and_is_rotation_invariant():
+    """圆盘/斜边边界不能退化成 x/y 外包矩形的十字形边缘。"""
+    from hamivisualizer.model.hamiltonian import edge_mask_for_positions
+
+    positions = np.array([
+        (x, y)
+        for x in range(-3, 4)
+        for y in range(-3, 4)
+        if x * x + y * y <= 9
+    ], dtype=float)
+    mask = edge_mask_for_positions(positions)
+    lookup = {tuple(point): bool(mask[index])
+              for index, point in enumerate(positions)}
+    # (2, 2) is a genuine oblique hull site but is not near an x/y extremum;
+    # the old bounding-box shell incorrectly treated it as bulk.
+    assert lookup[(2.0, 2.0)]
+    assert not lookup[(0.0, 0.0)]
+
+    angle = 0.371
+    rotation = np.array([
+        [np.cos(angle), -np.sin(angle)],
+        [np.sin(angle), np.cos(angle)],
+    ])
+    rotated = positions @ rotation.T
+    assert np.array_equal(edge_mask_for_positions(rotated), mask)
+
+
+def test_edge_mask_keeps_only_physical_ends_of_a_long_chain():
+    """一维链的边界厚度应按晶格间距固定，不随链长膨胀。"""
+    from hamivisualizer.model.hamiltonian import edge_mask_for_positions
+
+    positions = [(float(index), 0.0) for index in range(21)]
+    mask = edge_mask_for_positions(positions)
+    assert np.flatnonzero(mask).tolist() == [0, 20]
+
+
+def test_all_default_finite_shapes_have_rotation_invariant_edge_masks():
+    """全部默认晶格与有限盘形状都应得到非空、旋转不变的物理边界层。"""
+    from hamivisualizer.model.hamiltonian import edge_mask_for_positions
+
+    angle = 0.287
+    rotation = np.array([
+        [np.cos(angle), -np.sin(angle)],
+        [np.sin(angle), np.cos(angle)],
+    ])
+    checked = []
+    for template_name in TEMPLATE_NAMES:
+        for shape in ("rectangle", "triangle", "disk", "hexagon"):
+            document = template_document(
+                template_name, nx=6, ny=6, boundary_kind="obc",
+                connectivity="最近邻", shape=shape,
+            )
+            sites = document.get("sites", ())
+            cell = document.get("cell")
+            if not sites or not isinstance(cell, dict):
+                continue
+            if "a1" in cell:
+                a1 = np.asarray(cell["a1"], dtype=float)
+                a2 = np.asarray(cell["a2"], dtype=float)
+            else:
+                a1 = np.array([float(cell["Lx"]), 0.0])
+                a2 = np.array([0.0, float(cell["Ly"])])
+            boundary = Boundary(
+                BoundaryKind.OBC, NX=6, NY=6, shape=shape,
+                shape_vectors=(tuple(a1), tuple(a2)),
+            )
+            positions = np.asarray([
+                np.asarray((site["x"], site["y"]), dtype=float)
+                + cx * a1 + cy * a2
+                for cx, cy in boundary.active_cells()
+                for site in sites
+            ])
+            if positions.size == 0:
+                continue
+            mask = edge_mask_for_positions(positions)
+            assert mask.any(), (template_name, shape)
+            assert np.array_equal(
+                edge_mask_for_positions(positions @ rotation.T), mask,
+            ), (template_name, shape)
+            checked.append((template_name, shape))
+    # 当前空白自定义保留可编辑起始格点；十个模板的四种有限形状全部覆盖。
+    assert len(checked) == len(TEMPLATE_NAMES) * 4

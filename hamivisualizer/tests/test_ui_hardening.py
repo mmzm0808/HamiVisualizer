@@ -3346,6 +3346,29 @@ def test_wavefunction_markers_follow_site_spacing_without_covering_neighbors():
     assert max(item.rect().width() for item in circles) <= 0.34
 
 
+def test_energy_selection_prefers_edge_representative_in_exact_degeneracy():
+    """目标能量命中简并组时，应展示最可检查的边界局域代表态。"""
+    QApplication.instance() or QApplication([])
+    positions = tuple((float(x), float(y)) for y in range(5) for x in range(5))
+    density = np.zeros((25, 3), dtype=float)
+    density[12, 0] = 1.0       # 简并组中的体内代表
+    density[0, 1] = 1.0        # 同能级的边界代表
+    density[:, 2] = 1.0 / 25.0
+    view = WavefunctionView()
+    view.set_data(WfSceneData(
+        energies=np.array([0.0, 0.0, 1.0]),
+        wf=density,
+        positions=positions,
+        title="degenerate boundary audit",
+    ))
+
+    assert view.select_energy(0.0) == 1
+    assert view.combo.currentIndex() == 1
+    assert view._requested_group_size == 2
+    assert "同能级 2 态中优先边界代表" in view.info.text()
+    assert "边界局域态" in view.info.text()
+
+
 def test_vector_editor_stays_within_control_rail_at_large_ui_scale():
     _app, win, _ctrl = _window()
     win.resize(1440, 920)

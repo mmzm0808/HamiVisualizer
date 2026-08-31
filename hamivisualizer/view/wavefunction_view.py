@@ -85,6 +85,7 @@ class WavefunctionView(QWidget):
         self._data: WfSceneData | None = None
         self._state = 0
         self._requested_energy: float | None = None
+        self._requested_group_size = 1
         self._dark = False
         lay = QVBoxLayout(self)
         top = QVBoxLayout()
@@ -143,6 +144,7 @@ class WavefunctionView(QWidget):
         )
         self._state = 0
         self._requested_energy = None
+        self._requested_group_size = 1
         self.combo.blockSignals(True)
         self.combo.clear()
         # Keep the numerical index zero-based internally, but present the
@@ -179,6 +181,7 @@ class WavefunctionView(QWidget):
             # A direct state-picker choice is no longer an approximation to
             # a requested energy; omit the ΔE wording from its summary.
             self._requested_energy = None
+            self._requested_group_size = 1
             self._draw()
 
     def _step(self, d: int):
@@ -201,9 +204,37 @@ class WavefunctionView(QWidget):
         target = float(energy)
         if not np.isfinite(target):
             raise ValueError("目标能量必须是有限数值")
-        idx = int(np.argmin(np.abs(energies - target)))
+        distance = np.abs(energies - target)
+        nearest = int(np.argmin(distance))
+        # ``wavefunctions`` diagonalises the boundary projector inside an
+        # exactly degenerate eigenspace, producing physically useful bulk-
+        # and edge-localised representatives.  Selecting the first equal
+        # eigenvalue would systematically choose the least-edge-localised
+        # member (np.linalg.eigh orders projector weights ascending), making
+        # a correct target energy appear to have no boundary state.  Within
+        # the nearest numerical degeneracy only, choose the representative
+        # with the largest boundary probability.  Non-degenerate energy
+        # selection remains the ordinary nearest-level rule.
+        scale = max(1.0, abs(target), float(np.max(np.abs(energies))))
+        tolerance = max(1e-12, 128 * np.finfo(float).eps * scale)
+        candidates = np.flatnonzero(
+            np.abs(energies - energies[nearest]) <= tolerance
+        )
+        idx = nearest
+        if candidates.size > 1 and self._data.positions:
+            edge_mask = edge_mask_for_positions(self._data.positions)
+            densities = np.asarray(self._data.wf[:, candidates], dtype=float)
+            totals = np.sum(densities, axis=0)
+            edge_totals = np.sum(densities[edge_mask, :], axis=0)
+            weights = np.divide(
+                edge_totals, totals,
+                out=np.full(edge_totals.shape, -np.inf, dtype=float),
+                where=totals > 1e-15,
+            )
+            idx = int(candidates[int(np.argmax(weights))])
         self._state = idx
         self._requested_energy = target
+        self._requested_group_size = int(candidates.size)
         self.combo.blockSignals(True)
         self.combo.setCurrentIndex(idx)
         self.combo.blockSignals(False)
@@ -256,6 +287,10 @@ class WavefunctionView(QWidget):
                 f"目标 E = {self._requested_energy:.5g} → #{self._state + 1}，"
                 f"E = {selected:.5g}，ΔE = {delta:.2g}"
             )
+            if self._requested_group_size > 1:
+                energy_text += (
+                    f"（同能级 {self._requested_group_size} 态中优先边界代表）"
+                )
         summary = (
             f"{energy_text}  |  边界 {edge_weight:.1%}（均匀基线 {baseline:.1%}，"
             f"富集 {enrichment:.2f}×）  |  {character}"

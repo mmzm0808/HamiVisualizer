@@ -725,6 +725,23 @@ def test_kagome_triangle_has_flat_physical_edges_not_a_jagged_mask():
     assert max(side_lengths) - min(side_lengths) <= 1e-8
 
 
+def test_kagome_triangle_energy_target_exposes_degenerate_edge_state():
+    """Kagome 三角盘命中简并能级时应直接展示边界代表，而非体内代表。"""
+    _app, win, ctrl = _mk()
+    ctrl.apply_document(template_document(
+        "Kagome", connectivity="最近邻", boundary_kind="obc",
+        nx=6, ny=6, shape="triangle",
+    ))
+    target = math.sqrt(2.0) - 1.0
+    selected = win.wf_view.select_energy(target)
+
+    assert selected is not None
+    assert win.wf_view._requested_group_size == 2
+    assert win.wf_view.selected_energy == pytest.approx(target, abs=1e-12)
+    assert "同能级 2 态中优先边界代表" in win.wf_view.info.text()
+    assert "边界局域态" in win.wf_view.info.text()
+
+
 def test_triangle_scene_has_a_clear_physical_shape_badge():
     """The canvas labels a triangle without adding an interactive obstruction."""
     _app, win, ctrl = _mk()

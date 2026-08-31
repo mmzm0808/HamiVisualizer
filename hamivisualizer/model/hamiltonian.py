@@ -303,39 +303,117 @@ def eig(H):
     return np.linalg.eigh(_checked_numeric_hermitian(H))
 
 
-def edge_mask_for_positions(positions) -> np.ndarray:
-    """Return a geometry-aware outer-ring mask for finite real-space sites.
+def _nearest_site_spacing(points: np.ndarray) -> float:
+    """Return a robust physical nearest-neighbour spacing without an N² copy."""
+    count = len(points)
+    if count < 2:
+        return 0.0
+    nearest = np.full(count, np.inf, dtype=float)
+    # The dense Hamiltonian guard currently limits practical wavefunction
+    # samples to about 2048 sites.  Chunking still keeps this helper modest in
+    # memory and avoids allocating the much larger ``points[:, None, :]``
+    # tensor next to the eigensolver buffers.
+    chunk_size = min(256, count)
+    for start in range(0, count, chunk_size):
+        stop = min(count, start + chunk_size)
+        delta = points[start:stop, None, :] - points[None, :, :]
+        distance2 = np.einsum("ijk,ijk->ij", delta, delta)
+        rows = np.arange(stop - start)
+        distance2[rows, np.arange(start, stop)] = np.inf
+        # Coincident user points must not collapse the physical shell width.
+        distance2[distance2 <= 1e-20] = np.inf
+        nearest[start:stop] = np.sqrt(np.min(distance2, axis=1))
+    finite = nearest[np.isfinite(nearest)]
+    return float(np.median(finite)) if finite.size else 0.0
 
-    The mask is intentionally based on the *rendered physical positions*, not
-    matrix index ranges.  That makes it correct for slanted primitive cells
-    and the triangle/disk/hexagon finite masks as well as rectangular OBC.
+
+def _convex_hull(points: np.ndarray) -> np.ndarray:
+    """Return counter-clockwise hull vertices using the monotonic-chain rule."""
+    ordered = sorted({(float(x), float(y)) for x, y in points})
+    if len(ordered) <= 2:
+        return np.asarray(ordered, dtype=float)
+
+    scale = max(
+        max(x for x, _y in ordered) - min(x for x, _y in ordered),
+        max(y for _x, y in ordered) - min(y for _x, y in ordered),
+        1.0,
+    )
+    cross_tol = 1e-12 * scale * scale
+
+    def cross(origin, a, b):
+        return ((a[0] - origin[0]) * (b[1] - origin[1])
+                - (a[1] - origin[1]) * (b[0] - origin[0]))
+
+    lower: list[tuple[float, float]] = []
+    for point in ordered:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= cross_tol:
+            lower.pop()
+        lower.append(point)
+    upper: list[tuple[float, float]] = []
+    for point in reversed(ordered):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= cross_tol:
+            upper.pop()
+        upper.append(point)
+    return np.asarray(lower[:-1] + upper[:-1], dtype=float)
+
+
+def edge_mask_for_positions(positions) -> np.ndarray:
+    """Return a rotation-invariant one-layer boundary mask for finite sites.
+
+    The former x/y bounding-box shell missed slanted triangle edges and most
+    of a disk/hexagon perimeter; its ``15% of sample span`` thickness also
+    grew with system size and eventually labelled bulk sites as boundary.
+    The mask now follows the physical point-cloud convex hull and uses the
+    median nearest-site distance as a fixed one-lattice-layer scale.
     """
     points = np.asarray(positions, dtype=float)
     if points.ndim != 2 or points.shape[1] != 2 or not len(points):
         raise ValueError("positions 必须是非空的 (x, y) 坐标序列")
     if not np.all(np.isfinite(points)):
         raise ValueError("positions 包含 NaN 或 Inf")
-    spans = np.ptp(points, axis=0)
-    # A one-dimensional chain is represented by a set of points with zero
-    # span in one coordinate.  Treating that collapsed coordinate as an
-    # outer boundary marks *every* site as an edge, making SSH end states
-    # indistinguishable from bulk states.  Build the mask only from physical
-    # axes that actually span the sample; retain the old conservative 0.5
-    # unit shell for ordinary two-dimensional lattices.
-    scale = max(float(np.max(spans)), 1.0)
-    active_axes = tuple(
-        axis for axis, span in enumerate(spans)
-        if float(span) > max(1e-9, 1e-6 * scale)
-    )
-    if not active_axes:
+    if len(points) == 1:
+        return np.ones(1, dtype=bool)
+
+    spacing = _nearest_site_spacing(points)
+    if spacing <= 1e-12:
+        # Degenerate coincident coordinates have no meaningful interior.
         return np.ones(len(points), dtype=bool)
-    edge_tol = max(0.5, 0.15 * max(float(spans[axis]) for axis in active_axes))
-    mask = np.zeros(len(points), dtype=bool)
-    for axis in active_axes:
-        values = points[:, axis]
-        mask |= values <= values.min() + edge_tol
-        mask |= values >= values.max() - edge_tol
-    return mask
+    shell = max(1e-9, 0.80 * spacing)
+
+    centered = points - np.mean(points, axis=0, keepdims=True)
+    _u, singular, axes = np.linalg.svd(centered, full_matrices=False)
+    is_line = (
+        singular.size < 2
+        or singular[1] <= max(1e-10, 1e-9 * singular[0])
+    )
+    if is_line:
+        direction = axes[0]
+        coordinate = centered @ direction
+        return ((coordinate <= coordinate.min() + shell)
+                | (coordinate >= coordinate.max() - shell))
+
+    hull = _convex_hull(points)
+    if len(hull) < 3:
+        # Numerical near-collinearity fallback.
+        direction = axes[0]
+        coordinate = centered @ direction
+        return ((coordinate <= coordinate.min() + shell)
+                | (coordinate >= coordinate.max() - shell))
+
+    min_distance2 = np.full(len(points), np.inf, dtype=float)
+    for index, start in enumerate(hull):
+        end = hull[(index + 1) % len(hull)]
+        segment = end - start
+        length2 = float(segment @ segment)
+        if length2 <= 1e-20:
+            continue
+        fraction = np.clip(((points - start) @ segment) / length2, 0.0, 1.0)
+        closest = start + fraction[:, None] * segment
+        delta = points - closest
+        min_distance2 = np.minimum(
+            min_distance2, np.einsum("ij,ij->i", delta, delta),
+        )
+    return min_distance2 <= shell * shell + 1e-12
 
 
 def _localize_exactly_degenerate_edge_states(E: np.ndarray, U: np.ndarray,

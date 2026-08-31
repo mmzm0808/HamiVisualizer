@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsProxyWidget,
     QGraphicsRectItem,
+    QGraphicsSceneHelpEvent,
     QGraphicsTextItem,
     QLabel,
     QSplitter,
@@ -1064,17 +1065,60 @@ def test_matrix_tooltips_use_one_based_coordinates():
     """矩阵元悬停提示不能泄漏内部零基数组下标。"""
     QApplication.instance() or QApplication([])
     scene = MatrixView()
-    matrix = np.array([[1.0, -2.0], [-2.0, 1.0]])
+    matrix = np.array([[1.0, 0.0], [0.0, 1.0]])
     scene.set_data(MatrixSceneData(
-        n=2, values=matrix, matrix=matrix, mode="numeric",
+        n=2, values=matrix, matrix=matrix, mode="smart",
     ))
     rects = [item for item in scene.items() if isinstance(item, QGraphicsRectItem)]
     tooltips = [item.toolTip() for item in rects if item.toolTip()]
-    coordinates = {tip.partition(" = ")[0] for tip in tooltips}
+    by_coordinate = {tip.partition(" = ")[0]: tip for tip in tooltips}
+    coordinates = set(by_coordinate)
     assert {"H[1,1]", "H[2,2]"}.issubset(coordinates)
     assert all(not re.match(r"H\[(?:0,|\d+,0\])", value) for value in coordinates)
+    assert by_coordinate["H[1,2]"] == "H[1,2] = 0"
+    assert by_coordinate["H[2,1]"] == "H[2,1] = 0"
     text_tooltips = [item.toolTip() for item in scene._text_items if item.toolTip()]
     assert any(tip.startswith("H[1,1] = ") for tip in text_tooltips)
+
+
+def test_matrix_raster_tooltip_maps_zero_cell_and_logical_labels(monkeypatch):
+    """格栅化大矩阵也必须按实际单元格提供完整提示。"""
+    QApplication.instance() or QApplication([])
+    scene = MatrixView()
+    n = RASTER_THRESHOLD + 1
+    matrix = np.zeros((n, n), dtype=float)
+    sites = tuple(f"{index + 1}:A" for index in range(n))
+    scene.set_data(MatrixSceneData(
+        n=n, values=matrix, matrix=matrix, mode="smart", sites=sites,
+    ))
+    row, col = 32, 40
+    scene_pos = QPointF(
+        MARGIN + (col + 0.5) * scene._cell_size,
+        MARGIN + (row + 0.5) * scene._cell_size,
+    )
+    assert scene._cell_at_scene_pos(scene_pos) == (row, col)
+    assert scene.cell_tooltip(row, col) == "H[33:A,41:A]（H[33,41]） = 0"
+
+    calls = []
+
+    class _TooltipRecorder:
+        @staticmethod
+        def showText(pos, text, widget=None):
+            calls.append((pos, text, widget))
+
+        @staticmethod
+        def hideText():
+            calls.append((None, "", None))
+
+    import hamivisualizer.view.matrix_view as matrix_view_module
+
+    monkeypatch.setattr(matrix_view_module, "QToolTip", _TooltipRecorder)
+    event = QGraphicsSceneHelpEvent(QEvent.GraphicsSceneHelp)
+    event.setScenePos(scene_pos)
+    event.setScreenPos(QPoint(100, 100))
+    scene.helpEvent(event)
+    assert event.isAccepted()
+    assert calls[-1][1] == "H[33:A,41:A]（H[33,41]） = 0"
 
 
 def test_matrix_cell_click_does_not_arm_canvas_pan():

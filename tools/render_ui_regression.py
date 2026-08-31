@@ -15,6 +15,8 @@ from pathlib import Path
 import sys
 import tempfile
 
+import numpy as np
+
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -145,6 +147,10 @@ def main() -> int:
     parser.add_argument(
         "--matrix-selection-demo", action="store_true",
         help="Render a non-modal matrix-cell selection highlight and status detail.",
+    )
+    parser.add_argument(
+        "--matrix-zero-selection-demo", action="store_true",
+        help="Select a central exact-zero matrix element for inspection evidence.",
     )
     parser.add_argument(
         "--matrix-copy-demo", action="store_true",
@@ -802,9 +808,26 @@ def main() -> int:
             window.statusBar().showMessage(
                 "元胞间距已更新；编辑锚点与吸附参考已同步"
             )
-        if args.matrix_selection_demo or args.matrix_copy_demo:
+        if (
+            args.matrix_selection_demo
+            or args.matrix_zero_selection_demo
+            or args.matrix_copy_demo
+        ):
             window.tabs.setCurrentIndex(1)
-            window._on_matrix_cell_clicked(0, 1 if window.matrix_scene._data.n > 1 else 0)
+            row, col = 0, 1 if window.matrix_scene._data.n > 1 else 0
+            if args.matrix_zero_selection_demo:
+                zero_cells = np.argwhere(np.isclose(
+                    np.asarray(window.matrix_scene._data.values),
+                    0.0,
+                    rtol=0.0,
+                    atol=1e-12,
+                ))
+                if zero_cells.size == 0:
+                    raise RuntimeError("当前矩阵没有可用于证据的零元素")
+                center = (window.matrix_scene._data.n - 1) / 2.0
+                distances = np.sum((zero_cells - center) ** 2, axis=1)
+                row, col = map(int, zero_cells[int(np.argmin(distances))])
+            window._on_matrix_cell_clicked(row, col)
             if args.matrix_copy_demo:
                 window._copy_selected_matrix_cell()
             QApplication.processEvents()

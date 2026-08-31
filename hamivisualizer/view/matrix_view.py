@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsRectItem,
     QGraphicsScene,
+    QGraphicsSceneHelpEvent,
+    QToolTip,
 )
 
 from ..model.symbolic import (
@@ -170,11 +172,10 @@ class MatrixView(QGraphicsScene):
                 item.setZValue(0)
                 item.setData(0, (i, j))
                 t = texts[i][j]
-                if t:
-                    # Matrix arrays stay zero-based internally, but every
-                    # user-facing coordinate (status, copy, tooltip and
-                    # rulers) follows the conventional one-based notation.
-                    item.setToolTip(f"H[{i + 1},{j + 1}] = {t}")
+                # Keep a tooltip on zero cells as well.  Their canvas text is
+                # intentionally omitted to reduce clutter, but users must
+                # still be able to inspect the exact element under the mouse.
+                item.setToolTip(self._cell_tooltip_from_text(i, j, t or "0"))
                 self.addItem(item)
 
         # 小矩阵直接创建；中等矩阵等用户放大到足够阅读时再懒加载。
@@ -236,6 +237,57 @@ class MatrixView(QGraphicsScene):
             return False
         return self._matrix_rect.contains(QPointF(scene_pos))
 
+    def _cell_at_scene_pos(self, scene_pos: QPointF) -> tuple[int, int] | None:
+        """Map a scene position to one zero-based matrix cell."""
+        if self._data is None or self._cell_size <= 0:
+            return None
+        pos = QPointF(scene_pos)
+        if not self._matrix_rect.contains(pos):
+            return None
+        col = math.floor((pos.x() - MARGIN) / self._cell_size)
+        row = math.floor((pos.y() - MARGIN) / self._cell_size)
+        n = int(self._data.n)
+        if 0 <= row < n and 0 <= col < n:
+            return int(row), int(col)
+        return None
+
+    def _cell_coordinate_labels(self, row: int, col: int) -> tuple[str, str]:
+        """Return one-based array and logical ruler labels for one cell."""
+        row_label = (
+            self._axis_labels[row] if row < len(self._axis_labels) else str(row + 1)
+        )
+        col_label = (
+            self._axis_labels[col] if col < len(self._axis_labels) else str(col + 1)
+        )
+        return f"H[{row + 1},{col + 1}]", f"H[{row_label},{col_label}]"
+
+    def _cell_tooltip_from_text(self, row: int, col: int, value: str) -> str:
+        """Compose the shared small/raster matrix tooltip."""
+        index_label, logical_label = self._cell_coordinate_labels(row, col)
+        coordinate = (
+            logical_label
+            if logical_label == index_label
+            else f"{logical_label}（{index_label}）"
+        )
+        return f"{coordinate} = {str(value).replace(chr(10), ' ')}"
+
+    def cell_tooltip(self, i: int, j: int) -> str:
+        """Return the exact user-facing tooltip for any matrix cell."""
+        _, _, value = self.cell_details(i, j)
+        return self._cell_tooltip_from_text(int(i), int(j), value)
+
+    def helpEvent(self, event: QGraphicsSceneHelpEvent) -> None:
+        """Provide per-cell help even when the matrix is one raster pixmap."""
+        cell = self._cell_at_scene_pos(event.scenePos())
+        if cell is not None:
+            QToolTip.showText(
+                event.screenPos(), self.cell_tooltip(*cell), event.widget(),
+            )
+            event.accept()
+            return
+        QToolTip.hideText()
+        super().helpEvent(event)
+
     def cell_details(self, i: int, j: int) -> tuple[str, str, str]:
         """Return index labels and formatted text for a selected cell."""
         if self._data is None:
@@ -244,13 +296,12 @@ class MatrixView(QGraphicsScene):
         if not (0 <= int(i) < n and 0 <= int(j) < n):
             raise IndexError(f"矩阵下标越界: ({i}, {j})")
         row, col = int(i), int(j)
-        row_label = self._axis_labels[row] if row < len(self._axis_labels) else str(row + 1)
-        col_label = self._axis_labels[col] if col < len(self._axis_labels) else str(col + 1)
+        index_label, logical_label = self._cell_coordinate_labels(row, col)
         text = self._cell_text_at(row, col) or "0"
         # Numerical arrays remain zero-based internally, but all visible
         # matrix coordinates follow the one-based lattice numbering used by
         # the canvas and rulers.
-        return f"H[{row + 1},{col + 1}]", f"H[{row_label},{col_label}]", text
+        return index_label, logical_label, text
 
     def cell_latex(self, i: int, j: int) -> str:
         """Return a compilable LaTeX fragment for one matrix cell.
@@ -436,7 +487,7 @@ class MatrixView(QGraphicsScene):
                 ti.setPos(x + (self._cell_size - br.width() * fit) / 2,
                           y + (self._cell_size - br.height() * fit) / 2)
                 ti.setData(0, ("matrix-text", i, j))
-                ti.setToolTip(f"H[{i + 1},{j + 1}] = {t}")
+                ti.setToolTip(self._cell_tooltip_from_text(i, j, t))
                 self.addItem(ti)
                 self._text_items.append(ti)
 
@@ -640,17 +691,13 @@ class MatrixView(QGraphicsScene):
 
     def mousePressEvent(self, event):
         if self._data is not None and event.button() == Qt.LeftButton:
-            n = self._data.n
-            cell = self._cell_size
-            pos = event.scenePos()
-            if cell and self._matrix_rect.contains(pos):
-                j = math.floor((pos.x() - MARGIN) / cell)
-                i = math.floor((pos.y() - MARGIN) / cell)
-                if 0 <= i < n and 0 <= j < n:
-                    # Selection is useful both when text is hidden and when
-                    # it is readable: it provides a stable visual anchor and
-                    # lets the main window report the exact row/column
-                    # without opening a modal dialog or affecting panning.
-                    self.select_cell(i, j)
-                    self.cellClicked.emit(i, j)
+            cell = self._cell_at_scene_pos(event.scenePos())
+            if cell is not None:
+                i, j = cell
+                # Selection is useful both when text is hidden and when it is
+                # readable: it provides a stable visual anchor and lets the
+                # main window report the exact row/column without opening a
+                # modal dialog or affecting panning.
+                self.select_cell(i, j)
+                self.cellClicked.emit(i, j)
         super().mousePressEvent(event)

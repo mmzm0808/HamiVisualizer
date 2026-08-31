@@ -454,7 +454,11 @@ def wavefunctions(H, positions=None):
     energy degeneracies are represented by an edge-projector-localized basis,
     so the displayed finite-system modes are physically inspectable rather
     than arbitrary mixtures.  返回 ``(E, wf)``；``wf[:, k]`` 是第 ``k`` 个
-    本征态的 |ψ|²，按最大模归一到 [0, 1]，行序与矩阵索引一致。
+    本征态的真实概率密度 |ψ|²，满足每列之和为 1，行序与矩阵索引一致。
+
+    颜色映射若需要把峰值缩放到 1，应只在视图层执行。后端若把每列除以
+    最大值，虽然图案形状不变，却会让悬停显示的 ``|ψ_i|²`` 不再是概率，
+    也会使不同态之间的单点权重失去可比性。
     """
     E, U = np.linalg.eigh(_checked_numeric_hermitian(H))
     if positions is not None:
@@ -462,6 +466,6 @@ def wavefunctions(H, positions=None):
         if edge_mask.shape != (U.shape[0],):
             raise ValueError("positions 数量必须与哈密顿量维度一致")
         U = _localize_exactly_degenerate_edge_states(E, U, edge_mask)
-    wf = np.abs(U) ** 2
-    wf = wf / np.max(wf, axis=0, keepdims=True)
-    return E, wf
+    # ``np.linalg.eigh`` 返回正交归一本征向量，因此这里的平方模已经满足
+    # sum_i |psi_i|^2 = 1。保留真实概率；热图在绘制时单独按峰值着色。
+    return E, np.abs(U) ** 2

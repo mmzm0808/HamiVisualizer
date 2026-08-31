@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import QRectF
+from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QBrush, QPen
 from PySide6.QtWidgets import (
     QComboBox,
@@ -77,6 +77,27 @@ def _site_marker_radius(positions: list[tuple[float, float]]) -> float:
     return float(np.clip(0.32 * spacing, 0.10, 0.24))
 
 
+class _WavefunctionSiteItem(QGraphicsEllipseItem):
+    """Clickable probability marker without Qt's bulky selection rectangle."""
+
+    def __init__(self, *args, site_index: int, on_clicked, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.site_index = int(site_index)
+        self._on_clicked = on_clicked
+        self.setAcceptedMouseButtons(Qt.LeftButton)
+        self.setAcceptHoverEvents(True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setData(0, "wavefunction-site")
+        self.setData(1, self.site_index)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._on_clicked(self.site_index)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
 class WavefunctionView(QWidget):
     """|ψ|² 热图控件 (含态选择 QComboBox)."""
 
@@ -86,6 +107,8 @@ class WavefunctionView(QWidget):
         self._state = 0
         self._requested_energy: float | None = None
         self._requested_group_size = 1
+        self._selected_site: int | None = None
+        self._site_items: list[_WavefunctionSiteItem] = []
         self._dark = False
         lay = QVBoxLayout(self)
         top = QVBoxLayout()
@@ -145,6 +168,7 @@ class WavefunctionView(QWidget):
         self._state = 0
         self._requested_energy = None
         self._requested_group_size = 1
+        self._selected_site = None
         self.combo.blockSignals(True)
         self.combo.clear()
         # Keep the numerical index zero-based internally, but present the
@@ -167,6 +191,8 @@ class WavefunctionView(QWidget):
 
     def set_loading(self, message: str):
         self._data = None
+        self._selected_site = None
+        self._site_items = []
         self.combo.blockSignals(True)
         self.combo.clear()
         self.combo.blockSignals(False)
@@ -250,23 +276,62 @@ class WavefunctionView(QWidget):
             return None
         return float(energies[self._state])
 
-    def _draw(self):
-        self.scene.clear()
+    @property
+    def selected_site(self) -> int | None:
+        """当前检查的内部零基格点；界面始终显示为一基编号。"""
+        return self._selected_site
+
+    def select_site(self, index: int | None) -> None:
+        """Inspect one real-space site without rebuilding the scene.
+
+        ``None`` clears the inspection.  The public argument follows the
+        array's zero-based convention; every visible label converts it to the
+        user's one-based lattice numbering.
+        """
+        if index is None:
+            self._selected_site = None
+        else:
+            if self._data is None:
+                raise ValueError("波函数尚未生成")
+            index = int(index)
+            if not 0 <= index < len(self._data.positions):
+                raise IndexError(f"波函数格点下标越界: {index}")
+            self._selected_site = index
+        self._apply_site_selection_style()
+        self._update_info()
+
+    def _site_pen(self, selected: bool) -> QPen:
+        if selected:
+            color = QColor("#79b7ff") if self._dark else QColor("#0b63ce")
+            width = 2.2
+        else:
+            color = QColor(255, 255, 255, 72) if self._dark else QColor(0, 0, 0, 68)
+            width = 0.8
+        pen = QPen(color, width)
+        pen.setCosmetic(True)
+        return pen
+
+    def _apply_site_selection_style(self) -> None:
+        for index, item in enumerate(self._site_items):
+            item.setPen(self._site_pen(index == self._selected_site))
+
+    def _update_info(self) -> None:
         data = self._data
         if data is None or data.wf is None or data.wf.ndim != 2:
             self.info.setText("")
+            self.info.setToolTip("")
             return
-        if self._state >= data.wf.shape[1]:
+        if not 0 <= self._state < data.wf.shape[1]:
             self.info.setText("")
+            self.info.setToolTip("")
             return
-        wf = np.asarray(data.wf)  # (Nat, Nat), 列 = 态
-        col = wf[:, self._state]
+        col = np.asarray(data.wf[:, self._state], dtype=float)
         pos = list(data.positions)
         if not pos:
-            self.info.setText(f"能量 E = {data.energies[self._state]:.4f}")
+            summary = f"能量 E = {data.energies[self._state]:.4f}"
+            self.info.setText(summary)
+            self.info.setToolTip(summary)
             return
-        # 除能量外给出可解释的边界局域指标，避免用户凭“似乎居中”
-        # 猜测。边界掩膜与求解器处理严格简并态时使用同一几何定义。
         edge_mask = edge_mask_for_positions(pos)
         total = float(np.sum(col))
         edge_weight = float(np.sum(col[edge_mask]) / total) if total > 1e-15 else 0.0
@@ -295,8 +360,37 @@ class WavefunctionView(QWidget):
             f"{energy_text}  |  边界 {edge_weight:.1%}（均匀基线 {baseline:.1%}，"
             f"富集 {enrichment:.2f}×）  |  {character}"
         )
+        if self._selected_site is not None and self._selected_site < len(pos):
+            index = self._selected_site
+            x, y = pos[index]
+            probability = float(col[index] / total) if total > 1e-15 else 0.0
+            region = "边界" if bool(edge_mask[index]) else "体内"
+            summary += (
+                f"  |  格点 {index + 1}（{region}）："
+                f"(x, y)=({float(x):.5g}, {float(y):.5g})，"
+                f"|ψᵢ|²={probability:.6g}"
+            )
         self.info.setText(summary)
         self.info.setToolTip(summary)
+
+    def _draw(self):
+        self.scene.clear()
+        self._site_items = []
+        data = self._data
+        if data is None or data.wf is None or data.wf.ndim != 2:
+            self.info.setText("")
+            return
+        if self._state >= data.wf.shape[1]:
+            self.info.setText("")
+            return
+        wf = np.asarray(data.wf)  # (Nat, Nat), 列 = 态
+        col = wf[:, self._state]
+        pos = list(data.positions)
+        self._update_info()
+        if not pos:
+            return
+        edge_mask = edge_mask_for_positions(pos)
+        total = float(np.sum(col))
         xs = [p[0] for p in pos]
         ys = [-p[1] for p in pos]
         pad = 0.6
@@ -307,10 +401,18 @@ class WavefunctionView(QWidget):
         for i, (x, y) in enumerate(pos):
             y = -y
             t = min(1.0, float(col[i]) / scale)
-            circ = QGraphicsEllipseItem(x - r, y - r, 2 * r, 2 * r)
+            circ = _WavefunctionSiteItem(
+                x - r, y - r, 2 * r, 2 * r,
+                site_index=i, on_clicked=self.select_site,
+            )
             circ.setBrush(QBrush(_hot_color(t)))
-            pen = QPen(QColor(255, 255, 255, 60) if self._dark else QColor(0, 0, 0, 60), 0.3)
-            pen.setCosmetic(True)
-            circ.setPen(pen)
-            circ.setToolTip(f"site {i}\n|ψ|² = {float(col[i]):.6g}")
+            circ.setPen(self._site_pen(i == self._selected_site))
+            probability = float(col[i] / total) if total > 1e-15 else 0.0
+            region = "边界" if bool(edge_mask[i]) else "体内"
+            circ.setToolTip(
+                f"格点 {i + 1}（{region}）\n"
+                f"(x, y)=({float(pos[i][0]):.6g}, {float(pos[i][1]):.6g})\n"
+                f"|ψᵢ|² = {probability:.6g}"
+            )
             self.scene.addItem(circ)
+            self._site_items.append(circ)

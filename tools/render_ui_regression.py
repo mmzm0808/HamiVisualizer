@@ -100,6 +100,10 @@ def main() -> int:
         "--energy", type=float,
         help="OBC wavefunction target energy; selects the nearest eigenstate for screenshots.",
     )
+    parser.add_argument(
+        "--wavefunction-site", type=int,
+        help="One-based OBC site number to inspect persistently in a wavefunction screenshot.",
+    )
     parser.add_argument("--edit-lattice", action="store_true")
     parser.add_argument(
         "--select-hop-row", type=int,
@@ -569,6 +573,16 @@ def main() -> int:
         # rather than pretending a background result already exists.
         if window.wf_view._data is not None:
             window.wf_view.select_energy(args.energy)
+    if args.wavefunction_site is not None:
+        if args.boundary != "obc" or args.tab != "wavefunction":
+            raise ValueError(
+                "--wavefunction-site 仅适用于双开（OBC）的波函数标签页"
+            )
+        if args.wavefunction_site < 1:
+            raise ValueError("--wavefunction-site 使用从 1 开始的格点编号")
+        if window.wf_view._data is None:
+            raise ValueError("波函数尚未完成，无法检查指定格点")
+        window.wf_view.select_site(args.wavefunction_site - 1)
     if (args.edit_lattice or args.drag_snap_demo or args.spacing_edit_demo
             or args.hop_editor_demo):
         window.panel.params_group.setExpanded(False)

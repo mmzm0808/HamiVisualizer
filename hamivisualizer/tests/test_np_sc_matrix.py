@@ -168,13 +168,12 @@ def test_obc_eig_wavefunctions():
     E, U = eig(res.H)
     assert np.all(np.diff(E) >= -1e-12)  # 升序
     assert U.shape == (res.Nat, res.Nat)
-    # 波函数 |ψ|² 归一
+    # 波函数后端返回真实概率密度；每个正交归一态的总概率严格为 1。
     E2, wf = wavefunctions(res.H)
     assert np.allclose(E, E2)
     assert wf.shape == (res.Nat, res.Nat)
     assert np.all(wf >= 0) and np.all(wf <= 1 + 1e-12)
-    # 每个态最大 = 1
-    assert np.allclose(wf.max(axis=0), 1.0)
+    assert np.allclose(wf.sum(axis=0), 1.0)
 
 
 def test_wavefunctions_choose_edge_localized_basis_inside_exact_degeneracy():

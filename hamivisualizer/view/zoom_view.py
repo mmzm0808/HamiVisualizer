@@ -98,7 +98,7 @@ class ZoomGraphicsView(QGraphicsView):
                 # a click from starting a pan and swallowing the requested
                 # editor/endpoint action.
                 topology_hit = hit_kind in {
-                    "hopping-guide", "ghost-endpoint",
+                    "hopping-guide", "ghost-endpoint", "wavefunction-site",
                 }
                 movable_hit = (
                     getattr(scene, "edit_mode", False)

@@ -3346,6 +3346,49 @@ def test_wavefunction_markers_follow_site_spacing_without_covering_neighbors():
     assert max(item.rect().width() for item in circles) <= 0.34
 
 
+def test_wavefunction_site_inspection_uses_one_based_real_probability():
+    """点击格点应显示真实归一概率，而不是峰值归一的相对强度。"""
+    QApplication.instance() or QApplication([])
+    view = WavefunctionView()
+    view.set_data(WfSceneData(
+        energies=np.array([0.25]),
+        wf=np.array([[0.10], [0.30], [0.60]]),
+        positions=((0.0, 0.0), (1.0, 0.0), (2.0, 0.0)),
+        title="probability audit",
+    ))
+    view.select_site(1)
+    assert view.selected_site == 1
+    assert "格点 2" in view.info.text()
+    assert "|ψᵢ|²=0.3" in view.info.text()
+    assert "(x, y)=(1, 0)" in view.info.text()
+    assert view._site_items[1].pen().widthF() > view._site_items[0].pen().widthF()
+    assert "格点 1" in view._site_items[0].toolTip()
+    assert "site 0" not in view._site_items[0].toolTip()
+
+
+def test_wavefunction_marker_click_selects_site_without_arming_canvas_pan():
+    """真实鼠标点击格点应进入检查态，不能被通用左键平移抢走。"""
+    QApplication.instance() or QApplication([])
+    view = WavefunctionView()
+    view.resize(720, 520)
+    view.set_data(WfSceneData(
+        energies=np.array([0.0]),
+        wf=np.array([[0.2], [0.8]]),
+        positions=((0.0, 0.0), (1.0, 0.0)),
+        title="click audit",
+    ))
+    view.show()
+    QApplication.processEvents()
+    view.view.fitInView(view.scene.sceneRect(), Qt.KeepAspectRatio)
+    target = view._site_items[1]
+    point = view.view.mapFromScene(target.sceneBoundingRect().center())
+    QTest.mouseClick(view.view.viewport(), Qt.LeftButton, pos=point)
+    QApplication.processEvents()
+    assert view.selected_site == 1
+    assert "格点 2" in view.info.text()
+    assert view.view._pan_press_pos is None
+
+
 def test_energy_selection_prefers_edge_representative_in_exact_degeneracy():
     """目标能量命中简并组时，应展示最可检查的边界局域代表态。"""
     QApplication.instance() or QApplication([])

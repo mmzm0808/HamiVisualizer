@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self._base_title = "HamiVisualizer — 晶格哈密顿量可视化器"
         self._dirty = False
         self._status_flash_token = 0
+        self._status_flash_bar = None
         self._ui_scale = 1.0
         self._theme_mode = "system"
         self._dark = False
@@ -76,6 +77,7 @@ class MainWindow(QMainWindow):
         self._sessions: list[_Session] = []
         self._active_index = -1
         self._switching = False
+        self._pending_view_restore_session = None
         self._history_replay = False
         # One-shot semantic label for compound UI actions whose meaning is
         # more precise than a structural diff (for example restoring the
@@ -354,6 +356,24 @@ class MainWindow(QMainWindow):
         self._fit_after_scale_timer = QTimer(self)
         self._fit_after_scale_timer.setSingleShot(True)
         self._fit_after_scale_timer.timeout.connect(self._fit_after_scale)
+        # Keep all deferred UI callbacks parented to the window.  Static
+        # ``QTimer.singleShot`` callbacks can outlive a closing preview/tab
+        # window and invoke a bound method after its native child views have
+        # already been torn down.
+        self._status_flash_timer = QTimer(self)
+        self._status_flash_timer.setSingleShot(True)
+        self._status_flash_timer.timeout.connect(self._restore_status_flash)
+        self._view_restore_timer = QTimer(self)
+        self._view_restore_timer.setSingleShot(True)
+        self._view_restore_timer.timeout.connect(self._restore_pending_view_state)
+        self._param_column_fit_timer = QTimer(self)
+        self._param_column_fit_timer.setSingleShot(True)
+        self._param_column_fit_timer.timeout.connect(
+            self.panel._fit_param_table_columns
+        )
+        self._comparison_refresh_timer = QTimer(self)
+        self._comparison_refresh_timer.setSingleShot(True)
+        self._comparison_refresh_timer.timeout.connect(self._refresh_comparison)
         # Esc is a window-level cancellation affordance.  Relying only on
         # QGraphicsScene.keyPressEvent made cancellation fail when focus was
         # still in the toolbar or a side-table editor, leaving a topology tool
@@ -410,18 +430,29 @@ class MainWindow(QMainWindow):
         self._status_flash_token += 1
         token = self._status_flash_token
         bar = self.statusBar()
+        self._status_flash_bar = bar
         bar.setStyleSheet(f"QStatusBar {{ color: {self._theme().error_text}; font-weight: 600; }}")
         bar.showMessage(str(message), max(0, int(duration_ms)))
+        # Use a window-owned single-shot timer instead of the static helper:
+        # a delayed flash must never retain a closing status bar through a
+        # free-floating callback.  Restarting it also gives consecutive input
+        # changes one deterministic expiration point.
+        self._status_flash_timer.setInterval(max(0, int(duration_ms)))
+        self._status_flash_timer.start()
 
-        def restore():
-            if token == self._status_flash_token:
-                # A delayed flash may outlive a test/preview window.  PySide
-                # wrappers then still exist while the C++ status bar is gone.
-                try:
-                    bar.setStyleSheet("")
-                except RuntimeError:
-                    return
-        QTimer.singleShot(max(0, int(duration_ms)), restore)
+    def _restore_status_flash(self) -> None:
+        """Restore the status-bar style after the latest transient warning."""
+        if self._status_flash_token <= 0:
+            return
+        bar = self._status_flash_bar
+        if bar is None:
+            return
+        try:
+            bar.setStyleSheet("")
+        except RuntimeError:
+            # Window teardown can invalidate the native status bar before the
+            # parented timer itself is destroyed; treat that as normal.
+            return
 
     def set_boundary_mode(self, semi: bool):
         self.tabs.setTabEnabled(3, semi)
@@ -1046,7 +1077,11 @@ class MainWindow(QMainWindow):
         self._switching = False
         self._dirty = target.meta.dirty
         self.setWindowTitle(("* " if self._dirty else "") + self._base_title)
-        QTimer.singleShot(0, lambda s=target: self._restore_view_state(s))
+        # Defer the fit to the next layout turn, but keep the callback owned
+        # by this window so a rapid tab close cannot invoke a stale bound
+        # method through Qt's global timer queue.
+        self._pending_view_restore_session = target
+        self._view_restore_timer.start(0)
         self._update_history_actions()
         self._refresh_comparison_models()
         self._save_workspace_state()
@@ -1064,6 +1099,19 @@ class MainWindow(QMainWindow):
                 "zoomed": view.user_zoomed,
             })
         session.view_state = {"views": states}
+
+    def _restore_pending_view_state(self) -> None:
+        """Apply the latest tab's saved view state after layout settles."""
+        session = self._pending_view_restore_session
+        self._pending_view_restore_session = None
+        if session is None or self._switching:
+            return
+        # A queued timer may survive a tab switch, but only the currently
+        # active session should be restored into the shared views.
+        if 0 <= self._active_index < len(self._sessions):
+            if session is not self._sessions[self._active_index]:
+                return
+        self._restore_view_state(session)
 
     def _restore_view_state(self, session: _Session):
         from PySide6.QtGui import QTransform
@@ -1643,7 +1691,7 @@ class MainWindow(QMainWindow):
         # the ensuing splitter/layout pass (especially when switching from
         # 100% to 180%).  Defer one final fit until that pass completes so a
         # long value cannot regress to an elided ``0....`` label.
-        QTimer.singleShot(0, self.panel._fit_param_table_columns)
+        self._param_column_fit_timer.start(0)
         # Embedded lattice coefficient editors are fixed-pixel widgets.  A
         # stylesheet/font change can deliver their final resize event only
         # after the first layout pass; ask the scene-owned coalescing timer to
@@ -1747,6 +1795,19 @@ class MainWindow(QMainWindow):
         if self._theme_mode == "system":
             self._apply_style(self._ui_scale)
 
+    def _stop_deferred_callbacks(self) -> None:
+        """Cancel window-owned callbacks before native child teardown."""
+        for name in (
+            "_status_flash_timer", "_view_restore_timer",
+            "_param_column_fit_timer", "_comparison_refresh_timer",
+            "_fit_after_scale_timer", "_autosave_timer",
+        ):
+            timer = getattr(self, name, None)
+            if timer is not None:
+                timer.stop()
+        self._pending_view_restore_session = None
+        self._status_flash_token += 1
+
     def closeEvent(self, event):
         if self._workspace_enabled:
             if any(s.meta.dirty for s in self._sessions):
@@ -1764,8 +1825,10 @@ class MainWindow(QMainWindow):
             elif self.preferences.autosave:
                 self._autosave_current()
             self._save_workspace_state()
+            self._stop_deferred_callbacks()
             event.accept(); return
         if not self._dirty:
+            self._stop_deferred_callbacks()
             event.accept(); return
         answer = QMessageBox.question(
             self, "保存更改？", "当前模型有尚未保存的更改。",
@@ -1777,6 +1840,7 @@ class MainWindow(QMainWindow):
             controller = getattr(self, "controller", None)
             if controller is None or not controller.save_model():
                 event.ignore(); return
+        self._stop_deferred_callbacks()
         event.accept()
 
     def _fit_views(self):
@@ -1803,7 +1867,7 @@ class MainWindow(QMainWindow):
             # restored before its graphics views had a non-zero viewport.
             c.fit_all(force=False)
         if self._workspace_enabled and self.action_split.isChecked():
-            QTimer.singleShot(0, self._refresh_comparison)
+            self._comparison_refresh_timer.start(0)
 
     def all_views(self) -> list:
         return [

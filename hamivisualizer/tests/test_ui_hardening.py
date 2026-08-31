@@ -312,6 +312,22 @@ def test_busy_progress_stays_in_status_bar_without_top_banner():
     assert "后台计算" in win.statusBar().currentMessage()
 
 
+def test_deferred_window_callbacks_are_parented_and_cancelled_on_close():
+    """Transient UI callbacks must not outlive the native main window."""
+    _app, win, _ctrl = _window()
+    win.flash_status("短暂提示", duration_ms=5000)
+    assert win._status_flash_timer.parent() is win
+    assert win._status_flash_timer.isActive()
+    win._view_restore_timer.start(5000)
+    win._param_column_fit_timer.start(5000)
+    win._comparison_refresh_timer.start(5000)
+    win.close()
+    assert not win._status_flash_timer.isActive()
+    assert not win._view_restore_timer.isActive()
+    assert not win._param_column_fit_timer.isActive()
+    assert not win._comparison_refresh_timer.isActive()
+
+
 def test_dimension_sliders_and_inputs_stay_in_sync_without_old_small_cap():
     """NX/NY are convenient to scrub, but precise larger values remain valid."""
     _app, win, _ctrl = _window()

@@ -14,7 +14,9 @@ import math
 import re
 from fractions import Fraction
 
-from ..model.expression import evaluate_expression, parse_expression
+from ..model.expression import (
+    classify_strength_expression, evaluate_expression, parse_expression,
+)
 from ..model.persistence import MAX_NX, MAX_NY
 from ..model.hopping import SUPPORTED_PHASE_MODES
 from ..model.boundary import (
@@ -1465,34 +1467,144 @@ class ControlPanel(QWidget):
         group_name = selected["name"]
         relation_key = self._editor_relation_key(selected)
         params = self.get_params()
-        selected_expr = parse_expression(selected["amplitude"])
-        free = sorted(str(symbol) for symbol in selected_expr.free_symbols)
-        parameter = free[0] if len(free) == 1 else (
-            group_name if group_name.isidentifier() else "t"
-        )
-        group_entries = [
-            (table_row, hop) for table_row, hop in parsed_rows
-            if hop["name"] == group_name
-        ]
+        selected_class = classify_strength_expression(selected["amplitude"])
+        if selected_class.kind == "unsupported":
+            self.set_error(
+                f"跃迁绝对强度编辑仅支持实常数或单参数一次式："
+                f"{selected_class.reason}；请在表格中精确编辑复杂表达式。"
+            )
+            return None
+        parameter = selected_class.parameter
         relation_entries = [
-            (table_row, hop) for table_row, hop in group_entries
+            (table_row, hop) for table_row, hop in parsed_rows
             if self._editor_relation_key(hop) == relation_key
         ]
-        physical: dict[int, Fraction] = {}
+        relation_classes = [
+            classify_strength_expression(hop["amplitude"])
+            for _table_row, hop in relation_entries
+        ]
+        if any(
+            item.kind != selected_class.kind
+            or item.parameter != selected_class.parameter
+            for item in relation_classes
+        ):
+            self.set_error(
+                "目标跃迁关系包含不同表达式族，无法安全快捷编辑；"
+                "请在表格中精确编辑复杂表达式。"
+            )
+            return None
+        if selected_class.kind == "literal":
+            group_entries = relation_entries
+        else:
+            # Same named/phase parameter families retain the established
+            # cross-geometry ratio editor (e.g. honeycomb 1.2/0.3 => 4:1),
+            # while unrelated parameters and complex rows stay isolated.
+            group_entries = []
+            for table_row, hop in parsed_rows:
+                if (hop.get("name") != selected.get("name")
+                        or hop.get("phase_mode", "none") != selected.get("phase_mode", "none")
+                        or hop.get("phase", "0") != selected.get("phase", "0")):
+                    continue
+                classified_hop = classify_strength_expression(hop["amplitude"])
+                if (classified_hop.kind == "linear"
+                        and classified_hop.parameter == selected_class.parameter):
+                    group_entries.append((table_row, hop))
+        if selected_class.kind == "literal":
+            # Literals have no parameter to normalize and must affect only the
+            # selected geometric relation (including its folded reverse rows).
+            self.hop_table.blockSignals(True)
+            try:
+                for table_row, hop in relation_entries:
+                    value = evaluate_expression(hop["amplitude"], {})
+                    sign = -1 if value.real < 0 else 1
+                    self.hop_table.setItem(
+                        table_row, 5, self._table_item(str(sign * strength))
+                    )
+            finally:
+                self.hop_table.blockSignals(False)
+            self.set_error("")
+            self._emit_changed()
+            return f"已设置合并跃迁绝对强度：{strength:g}（字面量，不新增参数）"
+        current_values: dict[int, complex] = {}
         signs: dict[int, int] = {}
         for table_row, hop in group_entries:
             value = evaluate_expression(hop["amplitude"], params)
             if abs(value.imag) > 1e-9:
                 self.set_error("带复振幅的跃迁请使用 phase 列编辑，不能只改强度")
                 return None
+            if not math.isfinite(value.real):
+                self.set_error("跃迁强度必须是有限数值")
+                return None
+            current_values[table_row] = value
             signs[table_row] = -1 if value.real < 0 else 1
-            magnitude = strength if any(
-                table_row == relation_row for relation_row, _ in relation_entries
-            ) else abs(value.real)
-            physical[table_row] = Fraction(f"{magnitude:.12g}").limit_denominator(100000)
+        relation_rows = {table_row for table_row, _ in relation_entries}
+
+        def apply_local_scaling() -> str | None:
+            """Scale only the selected relation for non-rational families."""
+            candidates: dict[int, str] = {}
+            for table_row, hop in relation_entries:
+                old = current_values[table_row].real
+                if abs(old) <= 1e-12:
+                    self.set_error(
+                        "目标跃迁当前绝对值为 0，无法按比例快捷编辑；请在表格或参数栏中修改"
+                    )
+                    return None
+                scale = strength / abs(old)
+                if not math.isfinite(scale) or scale <= 0:
+                    self.set_error("无法得到有限的跃迁缩放因子")
+                    return None
+                source = str(hop["amplitude"]).strip()
+                candidates[table_row] = (
+                    source if abs(scale - 1.0) <= 1e-12
+                    else f"({scale:.12g})*({source})"
+                )
+                try:
+                    check = evaluate_expression(candidates[table_row], params)
+                except Exception:
+                    self.set_error("快捷编辑生成的表达式无法重新计算，请在表格中精确编辑")
+                    return None
+                if abs(abs(check) - strength) > 1e-8 * max(1.0, strength):
+                    self.set_error("快捷编辑后的跃迁强度未通过回算，请在表格中精确编辑")
+                    return None
+            self.hop_table.blockSignals(True)
+            try:
+                for table_row in relation_rows:
+                    self.hop_table.setItem(
+                        table_row, 5, self._table_item(candidates[table_row])
+                    )
+            finally:
+                self.hop_table.blockSignals(False)
+            self.set_error("")
+            self._emit_changed()
+            return (
+                f"已设置「{group_name}」绝对强度：{strength:g}；"
+                "含非有理系数，已局部缩放（未做整数比归一化）"
+            )
+
+        coefficients = [
+            classify_strength_expression(hop["amplitude"]).coefficient
+            for _table_row, hop in group_entries
+        ]
+        if not all(
+            coefficient is not None and coefficient.is_Rational is True
+            for coefficient in coefficients
+        ):
+            return apply_local_scaling()
+
+        physical: dict[int, Fraction] = {}
+        for table_row, _hop in group_entries:
+            magnitude = strength if table_row in relation_rows else abs(current_values[table_row].real)
+            # The canvas signal is a float even when the user entered an
+            # exact fraction such as ``1/3``.  Recover that intentional human
+            # value with a bounded rational approximation; unlike the old
+            # path this is used only for already-rational coefficient families
+            # and is still guarded by the denominator/ratio checks below.
+            physical[table_row] = Fraction(f"{magnitude:.12g}").limit_denominator(100_000)
         denominator = 1
         for value in physical.values():
             denominator = math.lcm(denominator, value.denominator)
+        if denominator > 1_000_000:
+            return apply_local_scaling()
         integer_values = [value.numerator * (denominator // value.denominator)
                           for value in physical.values()]
         common = 0
@@ -1502,11 +1614,20 @@ class ControlPanel(QWidget):
         if base <= 0:
             self.set_error("无法从跃迁强度得到有效比例")
             return None
+        if any((value / base).denominator != 1
+               or abs(value / base) > 10_000 for value in physical.values()):
+            return apply_local_scaling()
         self.hop_table.blockSignals(True)
         try:
             for table_row, _hop in group_entries:
-                ratio = int(physical[table_row] / base)
-                factor = "" if ratio == 1 else f"{ratio}*"
+                ratio_value = float(physical[table_row] / base)
+                rounded_ratio = round(ratio_value)
+                ratio = (
+                    str(int(rounded_ratio))
+                    if abs(ratio_value - rounded_ratio) <= 1e-9
+                    else f"{ratio_value:.10g}"
+                )
+                factor = "" if abs(ratio_value - 1.0) <= 1e-9 else f"{ratio}*"
                 sign = "-" if signs[table_row] < 0 else ""
                 self.hop_table.setItem(
                     table_row, 5, self._table_item(f"{sign}{factor}{parameter}")
@@ -1533,8 +1654,14 @@ class ControlPanel(QWidget):
 
         relation_parts = []
         for table_row, hop in group_entries[:6]:
-            ratio = int(physical[table_row] / base)
-            factor = "" if ratio == 1 else f"{ratio}×"
+            ratio_value = float(physical[table_row] / base)
+            rounded_ratio = round(ratio_value)
+            ratio = (
+                str(int(rounded_ratio))
+                if abs(ratio_value - rounded_ratio) <= 1e-9
+                else f"{ratio_value:.10g}"
+            )
+            factor = "" if abs(ratio_value - 1.0) <= 1e-9 else f"{ratio}×"
             relation_parts.append(
                 f"{relation_label(hop)}={factor}{parameter}"
             )
@@ -1560,9 +1687,11 @@ class ControlPanel(QWidget):
         normalized = lambda value, default: str(
             hop.get(value, default) if hop.get(value, default) is not None else default
         ).strip().replace(" ", "")
+        classified = classify_strength_expression(hop.get("amplitude", "1.0"))
         return geometry + (
             normalized("name", "t"), normalized("phase_mode", "none"),
             normalized("phase", "0"),
+            classified.kind, classified.parameter,
         )
 
     def _get_hop_rows_with_indices(self) -> list[tuple[int, dict]]:

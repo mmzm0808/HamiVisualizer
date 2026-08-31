@@ -664,8 +664,14 @@ class ViewController(QObject):
         # panel error label and returns without changing the document.  Only
         # accepted values may update the transient canvas edit context;
         # otherwise a theme switch could display a value the model rejected.
-        if panel.error_label.text():
+        # ``set_hopping_strength`` returns a summary only after the complete
+        # table/parameter transaction succeeds.  Do not use the visible error
+        # label as the commit signal: it may still contain an unrelated,
+        # already-visible warning while this edit itself is valid.
+        if summary is None:
+            self.window.lattice_scene.reject_hop_strength(int(row))
             return
+        self.window.lattice_scene.accept_hop_strength(int(row), float(strength))
         self.window.lattice_scene.update_hop_strength(int(row), float(strength))
         # A canvas coefficient commit is an explicit, completed edit rather
         # than a stream of keystrokes.  The panel's generic ``changed`` signal

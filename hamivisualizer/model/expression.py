@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import math
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import sympy as sp
 
@@ -23,6 +24,14 @@ MAX_ABS_NUMERIC_EXPONENT = 64
 
 class ExpressionError(ValueError):
     """An expression is invalid or outside the supported safe language."""
+
+
+@dataclass(frozen=True)
+class StrengthExpression:
+    kind: str
+    parameter: str | None = None
+    coefficient: sp.Expr | None = None
+    reason: str = ""
 
 
 _BINARY = {
@@ -172,3 +181,30 @@ def evaluate_expression(text: str, params: Mapping[str, float]) -> complex:
     if not (math.isfinite(value.real) and math.isfinite(value.imag)):
         raise ExpressionError("表达式结果必须是有限数值")
     return value
+
+
+def classify_strength_expression(text: str) -> StrengthExpression:
+    """Classify expressions safe for absolute-strength editing.
+
+    Only real finite literals and real finite homogeneous first-degree forms
+    ``c*p`` are accepted.  The decision is structural and never inferred from
+    the current numeric parameter values.
+    """
+    try:
+        expr = parse_expression(text)
+    except ExpressionError as exc:
+        return StrengthExpression("unsupported", reason=str(exc))
+    symbols = sorted(expr.free_symbols, key=str)
+    if not symbols:
+        if expr.is_real is not True or not expr.is_finite:
+            return StrengthExpression("unsupported", reason="必须是有限实数")
+        return StrengthExpression("literal", coefficient=expr)
+    if len(symbols) != 1:
+        return StrengthExpression("unsupported", reason="必须只含一个自由参数")
+    parameter = str(symbols[0])
+    coefficient = sp.simplify(expr / symbols[0])
+    if coefficient.free_symbols or coefficient.is_real is not True or coefficient.is_finite is not True:
+        return StrengthExpression("unsupported", reason="必须是实数有限的一次齐次式 c*p")
+    if coefficient == 0:
+        return StrengthExpression("unsupported", reason="参数系数不能为零")
+    return StrengthExpression("linear", parameter=parameter, coefficient=coefficient)

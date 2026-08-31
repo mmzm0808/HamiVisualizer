@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QStyleOptionGraphicsItem,
 )
 
+from ..model.expression import classify_strength_expression
 from .rendermodel import LatticeSceneData, Palette
 
 
@@ -2008,10 +2009,13 @@ class LatticeView(QGraphicsScene):
                 value = default
             return str(value).strip().replace(" ", "")
 
+        classified = classify_strength_expression(hop.get("amplitude", "1.0"))
         return (
             normalized(hop.get("name"), "t"),
             normalized(hop.get("phase_mode"), "none"),
             normalized(hop.get("phase"), "0"),
+            classified.kind,
+            classified.parameter,
         )
 
     @classmethod
@@ -2209,6 +2213,11 @@ class LatticeView(QGraphicsScene):
                 lambda r=row, field=editor: self._commit_hop_strength(r, field)
             )
             editor.setProperty("hvisualizer-original-strength", float(hop.get("strength", 1.0)))
+            # Keep the last accepted display string separately from the live
+            # line-edit text.  During editing ``editor.text()`` is already the
+            # user's pending value, so it cannot serve as the rollback
+            # snapshot when the controller rejects that value.
+            editor.setProperty("hvisualizer-accepted-text", editor.text())
             proxy = QGraphicsProxyWidget()
             proxy.setWidget(editor)
             proxy.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
@@ -2604,6 +2613,21 @@ class LatticeView(QGraphicsScene):
             # rebuild the scene when the user did not change the value.
             editor.setStyleSheet("")
             return
+        accepted_text = editor.property("hvisualizer-accepted-text")
+        if accepted_text is None:
+            accepted_text = f"{float(original):.8g}" if original is not None else editor.text()
+        old_state = (
+            str(accepted_text), editor.width(), editor.styleSheet(), original,
+        )
+        self._pending_hop_edit = (int(row), editor, old_state, value)
+        self.hoppingStrengthEdited.emit(int(row), value)
+
+    def accept_hop_strength(self, row: int, value: float) -> None:
+        """Finalize a strength edit after the model/controller accepts it."""
+        pending = getattr(self, "_pending_hop_edit", None)
+        if pending is None or pending[0] != int(row):
+            return
+        editor = pending[1]
         editor.setStyleSheet("")
         # Keep the committed representation predictable for subsequent edits
         # and screenshots while still preserving exact physics in the signal.
@@ -2625,4 +2649,21 @@ class LatticeView(QGraphicsScene):
         editor.setCursorPosition(0)
         QTimer.singleShot(0, self._reflow_editors)
         editor.setProperty("hvisualizer-original-strength", value)
-        self.hoppingStrengthEdited.emit(int(row), value)
+        editor.setProperty("hvisualizer-accepted-text", display)
+        self._pending_hop_edit = None
+
+    def reject_hop_strength(self, row: int) -> None:
+        """Restore an edit rejected by the model/controller transaction."""
+        pending = getattr(self, "_pending_hop_edit", None)
+        if pending is None or pending[0] != int(row):
+            return
+        editor, old_state = pending[1], pending[2]
+        old_text, old_width, old_style, old_original = old_state
+        editor.setText(old_text)
+        editor.setFixedWidth(old_width)
+        editor.setStyleSheet(old_style)
+        editor.setProperty("hvisualizer-original-strength", old_original)
+        editor.setProperty("hvisualizer-accepted-text", old_text)
+        editor.setCursorPosition(0)
+        self._pending_hop_edit = None
+        QTimer.singleShot(0, self._reflow_editors)

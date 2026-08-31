@@ -1640,6 +1640,15 @@ def test_edit_strength_rail_keeps_multiple_bonds_on_the_right_without_drift():
     assert len(scene._edit_proxies) == 1
     assert len(scene._edit_leader_links) == 1
     assert scene._edit_proxies[0].widget().toolTip().endswith("等价表格行：1, 2")
+    # Ratio normalization may rewrite one same-name row as ``-4*t`` while
+    # another remains ``-t``; the numeric multiplier must not split the family.
+    ratio_rows = [
+        {"row": 0, "from_site": 0, "to_site": 1, "off_x": 0, "off_y": 0,
+         "name": "t", "amplitude": "-t", "phase_mode": "none", "phase": "0"},
+        {"row": 1, "from_site": 0, "to_site": 1, "off_x": 0, "off_y": 0,
+         "name": "t", "amplitude": "-4*t", "phase_mode": "none", "phase": "0"},
+    ]
+    assert len(scene._editor_representative_hops(ratio_rows)) == 1
     # Both fields are in one stable right-hand rail; they must not drift by
     # inheriting the preceding hop's cell anchor.
     assert len({round(proxy.pos().x(), 6) for proxy in scene._edit_proxies}) == 1
@@ -1650,6 +1659,42 @@ def test_edit_strength_rail_keeps_multiple_bonds_on_the_right_without_drift():
         assert abs(horizontal.line().x2() - horizontal.line().x1()) >= 6.0 / factor
         assert horizontal.line().y1() == pytest.approx(horizontal.line().y2())
         assert proxy.pos().x() > mx
+
+
+def test_edit_strength_rail_keeps_independent_parameters_on_same_line_editable():
+    """同一几何线上的不同参数不能被错误合并后藏掉。"""
+    _app, win, ctrl = _window()
+    document = template_document(
+        "空白自定义", boundary_kind="semi", connectivity="仅格点",
+    )
+    document["sites"] = [
+        {"x": 0.2, "y": 0.0, "sublattice": "A"},
+        {"x": 0.6, "y": 0.8, "sublattice": "B"},
+    ]
+    document["hops"] = [
+        {"name": "t", "from_site": 0, "to_site": 1, "off_x": 0,
+         "off_y": 0, "amplitude": "t", "phase_mode": "none",
+         "phase": "0", "phase_sign": 1},
+        {"name": "t2", "from_site": 0, "to_site": 1, "off_x": 0,
+         "off_y": 0, "amplitude": "t2", "phase_mode": "none",
+         "phase": "0", "phase_sign": 1},
+    ]
+    document["params"] = {"t": 1.0, "t2": 0.25}
+    ctrl.apply_document(document)
+    win.resize(1440, 920)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+
+    scene = win.lattice_scene
+    assert len(scene._edit_proxies) == 2
+    assert len(scene._edit_leader_links) == 2
+    badges = [badge.toPlainText() for badge, _proxy in scene._edit_relation_badges]
+    assert badges == ["胞内 · t", "胞内 · t2"]
+    assert all("已合并等价表格行" not in proxy.widget().toolTip()
+               for proxy in scene._edit_proxies)
 
 
 def test_compact_editors_explain_adjacent_intra_and_intercell_bonds():

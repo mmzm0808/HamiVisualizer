@@ -119,6 +119,10 @@ def main() -> int:
         "--hop-editor-demo", action="store_true",
         help="Click the first canvas coefficient field and commit a 1/3 fraction.",
     )
+    parser.add_argument(
+        "--independent-parameter-demo", action="store_true",
+        help="Render two independent amplitudes that share one geometric bond.",
+    )
     parser.add_argument("--bond-ratio-demo", action="store_true")
     parser.add_argument(
         "--oblique-a1-demo", action="store_true",
@@ -267,6 +271,28 @@ def main() -> int:
         }
         document["cell"]["a1"][1] = 0.45
     controller.apply_document(document)
+    if args.independent_parameter_demo:
+        # A deliberately tiny model makes the semantic distinction visible:
+        # t and t2 act on the same geometric bond but are independent fields.
+        # This stays in the evidence harness only and never touches user
+        # models or the built-in preset definitions.
+        demo = template_document(
+            "空白自定义", nx=4, ny=4, boundary_kind="semi", connectivity="仅格点",
+        )
+        demo["sites"] = [
+            {"x": 0.2, "y": 0.0, "sublattice": "A"},
+            {"x": 0.6, "y": 0.8, "sublattice": "B"},
+        ]
+        demo["hops"] = [
+            {"name": "t", "from_site": 0, "to_site": 1,
+             "cell_offset": [0, 0], "amplitude": "t",
+             "phase_mode": "none", "phase": "0", "phase_sign": 1},
+            {"name": "t2", "from_site": 0, "to_site": 1,
+             "cell_offset": [0, 0], "amplitude": "t2",
+             "phase_mode": "none", "phase": "0", "phase_sign": 1},
+        ]
+        demo["params"] = {"t": 1.0, "t2": 0.25}
+        controller.apply_document(demo)
     if args.resource_hint_demo:
         # Exercise the live warning path without allocating the intentionally
         # oversized OBC matrix.  The dimensions remain editable and the model
@@ -590,7 +616,7 @@ def main() -> int:
             raise ValueError("波函数尚未完成，无法检查指定格点")
         window.wf_view.select_site(args.wavefunction_site - 1)
     if (args.edit_lattice or args.drag_snap_demo or args.spacing_edit_demo
-            or args.hop_editor_demo):
+            or args.hop_editor_demo or args.independent_parameter_demo):
         window.panel.params_group.setExpanded(False)
         window.panel.energy_group.setExpanded(False)
         window.panel.display_group.setExpanded(False)
@@ -668,6 +694,10 @@ def main() -> int:
         window.lattice_add_hop_btn.setChecked(True)
         window.statusBar().showMessage(
             "添加跃迁：中心格点与蓝色周期虚影均可作为端点，自动生成 dx/dy"
+        )
+    if args.independent_parameter_demo:
+        window.statusBar().showMessage(
+            "同一几何线包含独立参数 t 与 t2；两个输入框分别可编辑"
         )
     QApplication.processEvents()
     if args.show_all_hop_editors:

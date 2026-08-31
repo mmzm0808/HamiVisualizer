@@ -1966,15 +1966,8 @@ class LatticeView(QGraphicsScene):
         return eligible
 
     @staticmethod
-    def _editor_relation_key(hop: dict) -> tuple:
-        """Normalize duplicate Hermitian rows to one visual physical bond.
-
-        A rendered line represents one geometric relation, even if the table
-        contains a reverse Hermitian copy or several named contributions on
-        that same line.  The table remains the precise per-row fallback; the
-        canvas deliberately follows the user's mental model of one line →
-        one input field.
-        """
+    def _editor_geometry_key(hop: dict) -> tuple:
+        """Return the canonical geometric part of an editable relation."""
         fr, to = int(hop.get("from_site", -1)), int(hop.get("to_site", -1))
         ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
         reverse = ox < 0 or (ox == 0 and oy < 0) or (
@@ -1984,8 +1977,43 @@ class LatticeView(QGraphicsScene):
             fr, to, ox, oy = to, fr, -ox, -oy
         return (fr, to, ox, oy)
 
+    @staticmethod
+    def _editor_parameter_key(hop: dict) -> tuple:
+        """Identify the editable parameter family carried by a hopping row.
+
+        Rows with the same geometry but different named amplitudes (for
+        example ``t`` versus ``t2``) are independent physical contributions
+        and must keep separate controls.  The numeric multiplier in an
+        amplitude expression is deliberately ignored: the ratio editor turns
+        ``-t`` into ``-4*t`` while it is still the same editable ``t`` family.
+        Reverse Hermitian rows can still share one control: ``phase_sign`` is
+        intentionally omitted because it describes direction, not a second
+        user-editable magnitude.
+        """
+        def normalized(value, default: str) -> str:
+            if value is None:
+                value = default
+            return str(value).strip().replace(" ", "")
+
+        return (
+            normalized(hop.get("name"), "t"),
+            normalized(hop.get("phase_mode"), "none"),
+            normalized(hop.get("phase"), "0"),
+        )
+
+    @classmethod
+    def _editor_relation_key(cls, hop: dict) -> tuple:
+        """Normalize one physical relation and its parameter family.
+
+        One rendered line gets one field *per independent parameter family*:
+        duplicate/reverse rows belonging to the same amplitude remain quiet,
+        while distinct terms on an overlapping bond stay editable and
+        discoverable instead of silently disappearing from the canvas.
+        """
+        return cls._editor_geometry_key(hop) + cls._editor_parameter_key(hop)
+
     def _editor_representative_hops(self, hops: list[dict]) -> list[dict]:
-        """Return one editor per visually identical physical relation."""
+        """Return one editor per geometric relation/parameter family."""
         representatives: list[dict] = []
         grouped: dict[tuple, list[int]] = {}
         for hop in hops:
@@ -2034,6 +2062,10 @@ class LatticeView(QGraphicsScene):
         editor_hops = self._editor_representative_hops(editable)
         if not editor_hops:
             return
+        geometry_counts: dict[tuple, int] = {}
+        for hop in editor_hops:
+            geometry = self._editor_geometry_key(hop)
+            geometry_counts[geometry] = geometry_counts.get(geometry, 0) + 1
         rows = {int(hop.get("row", -1)) for hop in editor_hops}
         if self._active_hop_row not in rows:
             self._active_hop_row = None
@@ -2217,6 +2249,11 @@ class LatticeView(QGraphicsScene):
                     "胞内" if (ox == 0 and oy == 0)
                     else f"胞间 {ox:+d},{oy:+d}"
                 )
+                # If multiple independent amplitudes share the same geometric
+                # line, keep the compact relation badge but identify the
+                # parameter family so the two fields are not anonymous.
+                if geometry_counts.get(self._editor_geometry_key(hop), 0) > 1:
+                    relation_text += f" · {hop.get('name', 't')}"
                 badge = QGraphicsTextItem(relation_text)
                 badge_font = QFont("Segoe UI")
                 badge_font.setPointSizeF(8.0)

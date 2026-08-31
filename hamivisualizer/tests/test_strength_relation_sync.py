@@ -107,37 +107,28 @@ def test_nonrational_strength_edit_preserves_other_bonds_and_parameter():
     assert abs(evaluate_expression(rows[2]["amplitude"], params)) == pytest.approx(1.0)
 
 
-def test_rejected_canvas_strength_restores_editor_and_document():
-    """Unsupported canvas edits are transactional: field and model stay unchanged."""
+def test_unsupported_canvas_strength_is_not_offered_and_document_stays_intact():
+    """复杂幅度只在表格中编辑，不再先显示一个必然被拒绝的输入框。"""
     _app, window, controller = _window()
     doc = _reverse_document("semi")
-    doc["hops"][0]["amplitude"] = "t*u"
+    for hop in doc["hops"]:
+        hop["amplitude"] = "t*u"
     doc["params"]["u"] = 1.0
     controller.apply_document(doc)
     window.resize(1200, 800)
     window.show()
     QApplication.processEvents()
     window.lattice_mode_btn.setChecked(True)
-    window.lattice_coeff_btn.setChecked(True)
     controller.fit_all(force=True)
     QApplication.processEvents()
 
     scene = window.lattice_scene
-    assert scene._edit_proxies
-    proxy = scene._edit_proxies[0]
-    editor = proxy.widget()
-    row = int(proxy.data(1))
-    old_text = editor.text()
-    old_original = editor.property("hvisualizer-original-strength")
     before = controller.current_document()
-
-    editor.setText("2")
-    scene._commit_hop_strength(row, editor)
-    QApplication.processEvents()
-
-    assert editor.text() == old_text
-    assert editor.property("hvisualizer-original-strength") == old_original
+    assert scene._edit_hops == []
+    assert scene._edit_proxies == []
+    assert scene._edit_leader_links == []
     assert controller.current_document() == before
+    assert window.panel.get_hop_rows()[0]["amplitude"] == "t*u"
 
 
 def test_negative_offset_selected_row_syncs_with_reverse_row_and_survives_save_load(tmp_path):

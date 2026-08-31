@@ -36,6 +36,7 @@ from PySide6.QtWidgets import QAbstractItemView, QDialog, QFileDialog, QMessageB
 
 from .model.boundary import Boundary, BoundaryKind
 from .model.expression import evaluate_expression, parse_expression
+from .model.hopping_identity import classify_amplitude
 from .model.hamiltonian import HamiltonianBuilder, wavefunctions
 from .model.hopping import HoppingTerm, SUPPORTED_PHASE_MODES
 from .model.lattice import Lattice, Site
@@ -1025,6 +1026,13 @@ class ViewController(QObject):
         params = self.window.panel.get_params()
         edit_hops = []
         for row, hop in enumerate(hop_rows):
+            # Complex amplitudes remain fully visible/editable in the table,
+            # but must not masquerade as a numeric canvas field.  The canvas
+            # editor writes a single positive real strength back to a whole
+            # relation family; offering it for ``t*u``/``t+1``/``I*t`` would
+            # invite an edit that can only be rejected after the click.
+            if not classify_amplitude(hop.get("amplitude", "1.0")).editable:
+                continue
             try:
                 strength = abs(evaluate_expression(hop["amplitude"], params))
             except ValueError:

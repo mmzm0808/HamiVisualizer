@@ -124,6 +124,10 @@ def main() -> int:
         help="Render two independent amplitudes that share one geometric bond.",
     )
     parser.add_argument(
+        "--complex-amplitude-demo", action="store_true",
+        help="Render a complex amplitude as table-only, without a misleading canvas editor.",
+    )
+    parser.add_argument(
         "--reverse-offset-demo", action="store_true",
         help="Render reverse rows of one positive-offset inter-cell bond.",
     )
@@ -296,6 +300,24 @@ def main() -> int:
              "phase_mode": "none", "phase": "0", "phase_sign": 1},
         ]
         demo["params"] = {"t": 1.0, "t2": 0.25}
+        controller.apply_document(demo)
+    if args.complex_amplitude_demo:
+        # Complex expressions remain valid model data, but the scalar canvas
+        # shortcut is intentionally unavailable: users must edit these rows
+        # in the table where the complete expression is visible.
+        demo = template_document(
+            "空白自定义", nx=2, ny=2, boundary_kind="obc", connectivity="仅格点",
+        )
+        demo["sites"] = [
+            {"x": 0.0, "y": 0.0, "sublattice": "A"},
+            {"x": 0.8, "y": 0.0, "sublattice": "B"},
+        ]
+        demo["hops"] = [{
+            "name": "t", "from_site": 0, "to_site": 1,
+            "cell_offset": [0, 0], "amplitude": "t*u",
+            "phase_mode": "none", "phase": "0", "phase_sign": 1,
+        }]
+        demo["params"] = {"t": 1.0, "u": 2.0}
         controller.apply_document(demo)
     if args.reverse_offset_demo:
         # The two rows are Hermitian reverse descriptions of one +1-cell
@@ -642,7 +664,7 @@ def main() -> int:
         window.wf_view.select_site(args.wavefunction_site - 1)
     if (args.edit_lattice or args.drag_snap_demo or args.spacing_edit_demo
             or args.hop_editor_demo or args.independent_parameter_demo
-            or args.reverse_offset_demo):
+            or args.reverse_offset_demo or args.complex_amplitude_demo):
         window.panel.params_group.setExpanded(False)
         window.panel.energy_group.setExpanded(False)
         window.panel.display_group.setExpanded(False)
@@ -728,6 +750,13 @@ def main() -> int:
     if args.reverse_offset_demo:
         window.statusBar().showMessage(
             "正偏移胞间键的反向表格行已合并；右侧仅保留一个输入框"
+        )
+    if args.complex_amplitude_demo:
+        window.panel.sites_group.setExpanded(False)
+        window.panel.hops_group.setExpanded(True)
+        window.panel_scroll.ensureWidgetVisible(window.panel.hops_group)
+        window.statusBar().showMessage(
+            "复杂幅度 t·u 保留在表格中精确编辑；画布不显示误导性的标量输入框"
         )
     QApplication.processEvents()
     if args.show_all_hop_editors:

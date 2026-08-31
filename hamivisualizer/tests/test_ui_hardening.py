@@ -2549,6 +2549,41 @@ def test_dense_hop_editor_uses_progressive_disclosure_until_requested():
     assert len(scene._edit_proxies) == len(scene._editable_hops())
 
 
+@pytest.mark.parametrize("amplitude", ("t*u", "t+t2", "t+1", "I*t"))
+def test_complex_amplitudes_remain_table_only_without_misleading_canvas_editor(amplitude):
+    """复杂幅度可计算/保存，但绝对强度入口必须明确为不可用。"""
+    _app, win, ctrl = _window()
+    document = template_document(
+        "空白自定义", nx=2, ny=2, boundary_kind="obc", connectivity="仅格点",
+    )
+    document["sites"] = [
+        {"x": 0.0, "y": 0.0, "sublattice": "A"},
+        {"x": 0.8, "y": 0.0, "sublattice": "B"},
+    ]
+    document["hops"] = [{
+        "name": "t", "from_site": 0, "to_site": 1,
+        "cell_offset": [0, 0], "amplitude": amplitude,
+        "phase_mode": "none", "phase": "0", "phase_sign": 1,
+    }]
+    document["params"] = {"t": 1.0, "u": 2.0, "t2": 0.5}
+    ctrl.apply_document(document)
+    win._set_lattice_edit_mode(True)
+    _app.processEvents()
+
+    # The physical line stays in the normal scene data, while the edit layer
+    # receives no deceptive QLineEdit/leader for an expression it cannot
+    # safely normalize to one positive real coefficient.
+    scene = win.lattice_scene
+    assert scene._edit_hops == []
+    assert scene._editable_hops() == []
+    assert scene._edit_proxies == []
+    assert scene._edit_leader_links == []
+    # The single primitive-cell relation is replicated across the 2×2 OBC
+    # sample; each physical edge remains visible even though none is editable
+    # through the scalar-strength canvas shortcut.
+    assert len(scene._data.edges) == 4
+
+
 def test_dense_all_coefficient_editors_hide_crossing_leaders_until_inspected():
     """All fields stay editable while only the inspected bond gets a leader."""
     _app, win, ctrl = _window()

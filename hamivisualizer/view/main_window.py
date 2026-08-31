@@ -1808,6 +1808,13 @@ class MainWindow(QMainWindow):
         self._pending_view_restore_session = None
         self._status_flash_token += 1
 
+    def _shutdown_controller(self) -> None:
+        """Detach numerical workers before the QObject tree is torn down."""
+        controller = getattr(self, "controller", None)
+        shutdown = getattr(controller, "shutdown", None)
+        if shutdown is not None:
+            shutdown()
+
     def closeEvent(self, event):
         if self._workspace_enabled:
             if any(s.meta.dirty for s in self._sessions):
@@ -1825,9 +1832,11 @@ class MainWindow(QMainWindow):
             elif self.preferences.autosave:
                 self._autosave_current()
             self._save_workspace_state()
+            self._shutdown_controller()
             self._stop_deferred_callbacks()
             event.accept(); return
         if not self._dirty:
+            self._shutdown_controller()
             self._stop_deferred_callbacks()
             event.accept(); return
         answer = QMessageBox.question(
@@ -1840,6 +1849,7 @@ class MainWindow(QMainWindow):
             controller = getattr(self, "controller", None)
             if controller is None or not controller.save_model():
                 event.ignore(); return
+        self._shutdown_controller()
         self._stop_deferred_callbacks()
         event.accept()
 

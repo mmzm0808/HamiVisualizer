@@ -245,6 +245,19 @@ def _finite_shape_outline(lattice, boundary: Boundary, positions) -> tuple:
 class _SpectralSignals(QObject):
     finished = Signal(int, str, object)
     failed = Signal(int, str, str)
+    # Emitted after the numerical runnable has returned.  It is intentionally
+    # independent from the controller callbacks: a window may close while a
+    # worker is still finishing, and the worker must then be kept alive until
+    # its Python signal carrier is no longer needed.
+    done = Signal()
+
+
+# A window can be closed while a large eigensystem is still being evaluated.
+# Detached workers live here only for that short tail period; ``done`` removes
+# them as soon as the QRunnable has returned.  Keeping this tiny quarantine
+# outside the QObject tree prevents a closing window from destroying the
+# signal carrier underneath a worker thread.
+_DETACHED_SPECTRAL_WORKERS: set[object] = set()
 
 
 class _SpectralWorker(QRunnable):
@@ -255,10 +268,22 @@ class _SpectralWorker(QRunnable):
         self.generation = generation
         self.kind = kind
         self.payload = payload
-        # The QRunnable is auto-deleted by QThreadPool after ``run``. Parent
-        # the signal carrier to the controller so a queued finished/failed
-        # delivery cannot target a C++ QObject that has already been deleted.
-        self.signals = _SpectralSignals(signal_parent)
+        self._has_returned = False
+        # Do not parent the carrier to the controller.  A parented QObject is
+        # destroyed synchronously with the window, while the QRunnable may
+        # still be returning from NumPy/LAPACK on another thread.  The worker
+        # itself owns this carrier until ``run`` emits ``done``.
+        self.signals = _SpectralSignals()
+
+    def detach(self) -> None:
+        """Stop GUI callbacks while allowing an in-flight worker to finish."""
+        for signal in (self.signals.finished, self.signals.failed):
+            try:
+                signal.disconnect()
+            except (TypeError, RuntimeError):
+                # No connection (or a late Qt teardown) is already the safe
+                # state we want here.
+                pass
 
     def run(self):
         try:
@@ -272,6 +297,12 @@ class _SpectralWorker(QRunnable):
             self.signals.failed.emit(self.generation, self.kind, str(exc))
         else:
             self.signals.finished.emit(self.generation, self.kind, result)
+        finally:
+            # Set this before emitting ``done`` so shutdown can handle the
+            # narrow race where the numerical work has completed but the GUI
+            # callback has not yet reached the event queue.
+            self._has_returned = True
+            self.signals.done.emit()
 
 
 class ViewController(QObject):
@@ -300,6 +331,7 @@ class ViewController(QObject):
         self._lam: tuple | None = None     # lambdify 缓存: (names, matrix, func)
         self._fit_seen: dict = {}
         self._generation = 0
+        self._closing = False
         self._spectral_context: dict[int, tuple] = {}
         # Keep QRunnable signal owners alive until their callback arrives.
         # Without this strong reference, a large band calculation could emit
@@ -357,12 +389,49 @@ class ViewController(QObject):
         self.window.lattice_scene.set_snap_enabled(snap_enabled)
 
     def cancel_calculation(self):
+        if self._closing:
+            return
         self._debounce.stop()
         self._generation += 1
         self._spectral_context.clear()
         self.window.panel.set_calculating(False)
         self.window.set_result_state("stale", "计算已取消，当前结果可能不是最新。")
         self.window.statusBar().showMessage("已取消当前计算")
+
+    def shutdown(self) -> None:
+        """Detach background numerical work before the window is destroyed.
+
+        NumPy/LAPACK cannot be force-stopped safely from the GUI thread.  We
+        therefore invalidate the generation, disconnect all GUI receivers,
+        and quarantine the still-running workers until their ``done`` signal.
+        The close operation remains immediate while no callback can touch a
+        deleted QWidget or QObject.
+        """
+        if self._closing:
+            return
+        self._closing = True
+        self._debounce.stop()
+        self._generation += 1
+        self._spectral_context.clear()
+        workers = tuple(self._spectral_workers.values())
+        self._spectral_workers.clear()
+        for worker in workers:
+            _DETACHED_SPECTRAL_WORKERS.add(worker)
+
+            def release(worker=worker):
+                _DETACHED_SPECTRAL_WORKERS.discard(worker)
+
+            try:
+                worker.signals.done.connect(release)
+            except RuntimeError:
+                _DETACHED_SPECTRAL_WORKERS.discard(worker)
+                continue
+            # ``run`` may have returned just before the connection above.  A
+            # second state check closes that race and avoids a permanent
+            # quarantine entry for an already-finished worker.
+            if worker._has_returned:
+                release()
+            worker.detach()
 
     # ---- 预设 ----
 
@@ -1107,8 +1176,10 @@ class ViewController(QObject):
             )
 
     def _start_spectral(self, generation: int, kind: str, payload, res) -> None:
+        if self._closing:
+            return
         self._spectral_context[generation] = (kind, res)
-        worker = _SpectralWorker(generation, kind, payload, self)
+        worker = _SpectralWorker(generation, kind, payload)
         self._spectral_workers[generation] = worker
         worker.signals.finished.connect(self._on_spectral_finished)
         worker.signals.failed.connect(self._on_spectral_failed)
@@ -1116,6 +1187,8 @@ class ViewController(QObject):
 
     @Slot(int, str, object)
     def _on_spectral_finished(self, generation: int, kind: str, result) -> None:
+        if self._closing:
+            return
         if generation != self._generation:
             self._spectral_context.pop(generation, None)
             self._spectral_workers.pop(generation, None)
@@ -1154,6 +1227,8 @@ class ViewController(QObject):
 
     @Slot(int, str, str)
     def _on_spectral_failed(self, generation: int, kind: str, message: str) -> None:
+        if self._closing:
+            return
         if generation != self._generation:
             self._spectral_workers.pop(generation, None)
             return

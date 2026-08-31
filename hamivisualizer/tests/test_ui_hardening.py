@@ -37,7 +37,12 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
 )
 
-from hamivisualizer.controller import ViewController, _build_lattice_scene
+from hamivisualizer.controller import (
+    ViewController,
+    _DETACHED_SPECTRAL_WORKERS,
+    _SpectralWorker,
+    _build_lattice_scene,
+)
 from hamivisualizer.model.boundary import Boundary, BoundaryKind
 from hamivisualizer.model.hamiltonian import HamiltonianBuilder
 from hamivisualizer.model.hopping import HoppingTerm
@@ -314,7 +319,7 @@ def test_busy_progress_stays_in_status_bar_without_top_banner():
 
 def test_deferred_window_callbacks_are_parented_and_cancelled_on_close():
     """Transient UI callbacks must not outlive the native main window."""
-    _app, win, _ctrl = _window()
+    _app, win, ctrl = _window()
     win.flash_status("短暂提示", duration_ms=5000)
     assert win._status_flash_timer.parent() is win
     assert win._status_flash_timer.isActive()
@@ -322,10 +327,36 @@ def test_deferred_window_callbacks_are_parented_and_cancelled_on_close():
     win._param_column_fit_timer.start(5000)
     win._comparison_refresh_timer.start(5000)
     win.close()
+    assert ctrl._closing
     assert not win._status_flash_timer.isActive()
     assert not win._view_restore_timer.isActive()
     assert not win._param_column_fit_timer.isActive()
     assert not win._comparison_refresh_timer.isActive()
+
+
+def test_closing_window_detaches_inflight_spectral_worker_signals():
+    """A closing window must not destroy a worker's Qt signal carrier."""
+    _app, win, ctrl = _window()
+    worker = _SpectralWorker(
+        7, "wf", (np.eye(2), ((0.0, 0.0), (1.0, 0.0))),
+    )
+    worker.signals.finished.connect(ctrl._on_spectral_finished)
+    worker.signals.failed.connect(ctrl._on_spectral_failed)
+    ctrl._spectral_workers[7] = worker
+    ctrl._spectral_context[7] = ("wf", object())
+
+    ctrl.shutdown()
+
+    assert ctrl._closing
+    assert ctrl._spectral_workers == {}
+    assert ctrl._spectral_context == {}
+    assert worker.signals.parent() is None
+    assert worker in _DETACHED_SPECTRAL_WORKERS
+
+    # Simulate the worker's final turn.  The quarantine must release its
+    # strong reference without invoking any GUI callback.
+    worker.signals.done.emit()
+    assert worker not in _DETACHED_SPECTRAL_WORKERS
 
 
 def test_dimension_sliders_and_inputs_stay_in_sync_without_old_small_cap():

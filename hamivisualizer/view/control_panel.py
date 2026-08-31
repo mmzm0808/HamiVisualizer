@@ -19,6 +19,7 @@ from ..model.expression import (
 )
 from ..model.persistence import MAX_NX, MAX_NY
 from ..model.hopping import SUPPORTED_PHASE_MODES
+from ..model.hopping_identity import editor_relation_key as shared_editor_relation_key
 from ..model.boundary import (
     BoundaryKind, SHAPE_DISK, SHAPE_HEXAGON, SHAPE_RECTANGLE, SHAPE_TRIANGLE,
 )
@@ -1681,18 +1682,7 @@ class ControlPanel(QWidget):
         t/t2 and distinct phase terms independent and makes a representative
         editor write back to every equivalent directed row.
         """
-        fr, to = int(hop.get("from_site", -1)), int(hop.get("to_site", -1))
-        ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
-        geometry = min((fr, to, ox, oy), (to, fr, -ox, -oy))
-        normalized = lambda value, default: str(
-            hop.get(value, default) if hop.get(value, default) is not None else default
-        ).strip().replace(" ", "")
-        classified = classify_strength_expression(hop.get("amplitude", "1.0"))
-        return geometry + (
-            normalized("name", "t"), normalized("phase_mode", "none"),
-            normalized("phase", "0"),
-            classified.kind, classified.parameter,
-        )
+        return shared_editor_relation_key(hop)
 
     def _get_hop_rows_with_indices(self) -> list[tuple[int, dict]]:
         """Parse hopping rows while retaining their physical table indices.

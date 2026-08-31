@@ -33,7 +33,11 @@ from PySide6.QtWidgets import (
     QStyleOptionGraphicsItem,
 )
 
-from ..model.expression import classify_strength_expression
+from ..model.hopping_identity import (
+    canonical_geometry as shared_canonical_geometry,
+    editor_parameter_key as shared_editor_parameter_key,
+    editor_relation_key as shared_editor_relation_key,
+)
 from .rendermodel import LatticeSceneData, Palette
 
 
@@ -1985,11 +1989,7 @@ class LatticeView(QGraphicsScene):
         handles positive as well as negative offsets; a sign-only heuristic
         misses reverse rows such as ``1 → 0, dy=+1``.
         """
-        fr, to = int(hop.get("from_site", -1)), int(hop.get("to_site", -1))
-        ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
-        forward = (fr, to, ox, oy)
-        reverse = (to, fr, -ox, -oy)
-        return min(forward, reverse)
+        return shared_canonical_geometry(hop)
 
     @staticmethod
     def _editor_parameter_key(hop: dict) -> tuple:
@@ -2004,19 +2004,7 @@ class LatticeView(QGraphicsScene):
         intentionally omitted because it describes direction, not a second
         user-editable magnitude.
         """
-        def normalized(value, default: str) -> str:
-            if value is None:
-                value = default
-            return str(value).strip().replace(" ", "")
-
-        classified = classify_strength_expression(hop.get("amplitude", "1.0"))
-        return (
-            normalized(hop.get("name"), "t"),
-            normalized(hop.get("phase_mode"), "none"),
-            normalized(hop.get("phase"), "0"),
-            classified.kind,
-            classified.parameter,
-        )
+        return shared_editor_parameter_key(hop)
 
     @classmethod
     def _editor_relation_key(cls, hop: dict) -> tuple:
@@ -2027,7 +2015,7 @@ class LatticeView(QGraphicsScene):
         while distinct terms on an overlapping bond stay editable and
         discoverable instead of silently disappearing from the canvas.
         """
-        return cls._editor_geometry_key(hop) + cls._editor_parameter_key(hop)
+        return shared_editor_relation_key(hop)
 
     def _editor_representative_hops(self, hops: list[dict]) -> list[dict]:
         """Return one editor per geometric relation/parameter family."""

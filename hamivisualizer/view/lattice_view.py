@@ -511,6 +511,7 @@ class LatticeView(QGraphicsScene):
         # active row so moving the pointer never rebuilds or mutates a model.
         self._hovered_hop_row: int | None = None
         self._hover_hop_label: QGraphicsTextItem | None = None
+        self._hover_hop_label_bg: QGraphicsRectItem | None = None
         self._focused_hop_row: int | None = None
         # QGraphicsProxyWidget has QObject ownership semantics in PySide6;
         # keeping explicit references prevents an input proxy (and its guide)
@@ -1083,6 +1084,9 @@ class LatticeView(QGraphicsScene):
             # event. Removing it synchronously can invalidate the native
             # paint item on Windows and cause an access violation.
             label.setVisible(False)
+        background = self._hover_hop_label_bg
+        if background is not None:
+            background.setVisible(False)
 
     def clear_hover_hop_preview(self) -> None:
         """Clear a preview and remove it after the current Qt event.
@@ -1096,11 +1100,16 @@ class LatticeView(QGraphicsScene):
 
     def _drop_hover_hop_label(self) -> None:
         label = self._hover_hop_label
-        if label is None or label.isVisible():
+        background = self._hover_hop_label_bg
+        if ((label is not None and label.isVisible())
+                or (background is not None and background.isVisible())):
             return
-        if label.scene() is self:
+        if label is not None and label.scene() is self:
             self.removeItem(label)
+        if background is not None and background.scene() is self:
+            self.removeItem(background)
         self._hover_hop_label = None
+        self._hover_hop_label_bg = None
 
     def _show_hover_hop_label(self, row: int) -> None:
         """Show a lightweight coefficient preview over the hovered bond.
@@ -1122,6 +1131,10 @@ class LatticeView(QGraphicsScene):
         if preview is None or preview.scene() is not self:
             preview = QGraphicsTextItem()
             self.addItem(preview)
+        background = self._hover_hop_label_bg
+        if background is None or background.scene() is not self:
+            background = QGraphicsRectItem()
+            self.addItem(background)
         preview.setPlainText(value)
         font = QFont("Segoe UI")
         font.setPointSizeF(9.0)
@@ -1133,6 +1146,22 @@ class LatticeView(QGraphicsScene):
         preview.setZValue(27)
         preview.setData(0, "hopping-hover-coefficient")
         preview.setToolTip(f"跃迁 {int(row) + 1} 系数；点击线条后可编辑")
+        # A small pill-shaped background makes the transient value discoverable
+        # on both themes without turning it into another interactive widget.
+        # It shares the fixed-pixel transform and never accepts mouse input,
+        # so it cannot steal the guide click or arm canvas panning.
+        background.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        background.setBrush(
+            QBrush(QColor(24, 36, 52, 236) if self._dark
+                   else QColor(255, 255, 255, 242))
+        )
+        background.setPen(
+            _pen((0.28, 0.63, 0.88) if self._dark
+                 else (0.08, 0.37, 0.62), 0.8)
+        )
+        background.setZValue(26.5)
+        background.setAcceptedMouseButtons(Qt.NoButton)
+        background.setData(0, "hopping-hover-coefficient-bg")
         # Position near the bond midpoint with a small screen-space lift.
         try:
             fr, to = int(hop["from_site"]), int(hop["to_site"])
@@ -1147,8 +1176,16 @@ class LatticeView(QGraphicsScene):
             preview.setPos((x1 + x2) / 2, -(y1 + y2) / 2)
         except (IndexError, KeyError, TypeError, ValueError):
             preview.setPos(0.0, 0.0)
+        padding_x, padding_y = 5.0, 3.0
+        text_rect = preview.boundingRect()
+        background.setRect(
+            text_rect.adjusted(-padding_x, -padding_y, padding_x, padding_y)
+        )
+        background.setPos(preview.pos())
         preview.setVisible(True)
+        background.setVisible(True)
         self._hover_hop_label = preview
+        self._hover_hop_label_bg = background
 
     def _update_edit_leader_visibility(self) -> None:
         """Apply progressive disclosure to coefficient leader lines."""
@@ -1777,6 +1814,7 @@ class LatticeView(QGraphicsScene):
         for widget in old_widgets:
             QCoreApplication.sendPostedEvents(widget, QEvent.DeferredDelete)
         self._hover_hop_label = None
+        self._hover_hop_label_bg = None
         pal = Palette()
         if not data.sites:
             self.setSceneRect(QRectF())

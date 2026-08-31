@@ -2755,9 +2755,15 @@ def test_hovering_bond_shows_transient_coefficient_without_prebuilding_editors()
                if item.data(0) == "hopping-hover-coefficient"]
     assert len(preview) == 1
     assert preview[0].toPlainText() == "2.5"
+    badge_background = [item for item in scene.items()
+                        if item.data(0) == "hopping-hover-coefficient-bg"]
+    assert len(badge_background) == 1
+    assert badge_background[0].isVisible()
     scene.clear_hover_hop_preview()
     QApplication.processEvents()
     assert not any(item.data(0) == "hopping-hover-coefficient"
+                   for item in scene.items())
+    assert not any(item.data(0) == "hopping-hover-coefficient-bg"
                    for item in scene.items())
 
 

@@ -40,6 +40,12 @@ from ..model.hopping_identity import (
 )
 from .rendermodel import LatticeSceneData, Palette
 
+# Decorative only: the editable site's disc and its shape() remain the
+# interaction target. Keep this ring close to the disc so small-coordinate
+# cells do not read as a second, oversized site.
+SNAP_HALO_SCALE = 1.16
+SNAP_HALO_GAP = 0.018
+
 
 def _q(rgb: tuple, alpha: int = 255) -> QColor:
     return QColor(*[int(c * 255) for c in rgb], alpha)
@@ -882,7 +888,14 @@ class LatticeView(QGraphicsScene):
             # regular sites look detached from the visible grid.  Every exact
             # target now gets the same compact ring; the site itself remains
             # the only interactive item.
-            halo_radius = max(0.205, min(0.285, self._site_radius + 0.03))
+            # Scale with the model rather than using a scene-unit cap: a
+            # custom large-spacing lattice must never get a ring smaller than
+            # its editable disc.  The 16% margin is still substantially below
+            # the old fixed 0.205 minimum on compact cells.
+            halo_radius = max(
+                self._site_radius * SNAP_HALO_SCALE,
+                self._site_radius + SNAP_HALO_GAP,
+            )
             # Current sites and the immutable geometry captured on entry to
             # edit mode are both legitimate magnetic targets.  The latter is
             # intentionally dashed: after a drag it gives the user a visible
@@ -1692,11 +1705,6 @@ class LatticeView(QGraphicsScene):
             x1 += rail_reserve
         self.setSceneRect(QRectF(x0, y0, x1 - x0, y1 - y0))
 
-        # Keep the snap targets visually behind cell outlines and bonds.  It
-        # is intentionally drawn only while editing; browsing remains clean.
-        if self.edit_mode:
-            self._draw_snap_grid()
-
         # A non-rectangular sample should identify itself in the canvas.  The
         # badge is deliberately anchored to the scene margin (not to a cell
         # or a node), so it remains visible after zooming/panning without
@@ -1875,6 +1883,12 @@ class LatticeView(QGraphicsScene):
         # look like overlapping bubbles once edit handles and fields were on.
         r = 0.12 * min(bond_lengths) if bond_lengths else 0.14
         self._site_radius = r
+        # Draw after the current model radius is known.  Calling this earlier
+        # would reuse the previous frame's radius and make snap rings too
+        # large (or, for a large-spacing custom lattice, smaller than the
+        # editable disc).  Z-values still keep the dots behind all physics.
+        if self.edit_mode:
+            self._draw_snap_grid()
         for _idx, (x, y, label, sub) in enumerate(data.sites):
             y = -y
             rgb = pal.site_a if sub == "A" else pal.site_b

@@ -1902,6 +1902,48 @@ def test_rebuilding_edit_scene_disposes_old_embedded_strength_editors():
     assert all(widget.isVisible() for widget in editors)
 
 
+def test_rebuilding_focused_edit_scene_defers_proxy_destruction_until_event_turn():
+    """A focused proxy must not be destroyed from the rebuild call stack.
+
+    On Windows the old synchronous DeferredDelete flush could run while a
+    QLineEdit focus/mouse callback still held a native backing-store pointer.
+    The replacement editor may be created immediately, but the old child is
+    retired and flushed by the scene-owned timer on the next event-loop turn.
+    """
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document("蜂窝", connectivity="最近邻"))
+    win.resize(1440, 920)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    win.lattice_coeff_btn.setChecked(True)
+    QApplication.processEvents()
+    scene = win.lattice_scene
+    assert scene._edit_proxies
+    editor_count = len(scene._edit_proxies)
+    old_editor = scene._edit_proxies[0].widget()
+    old_editor.setFocus()
+    QApplication.processEvents()
+    assert old_editor.hasFocus()
+    before = [widget for widget in QApplication.allWidgets()
+              if widget.objectName() == "hopStrengthEditor"]
+
+    scene.set_data(scene._data)
+    # The rebuild returns with a complete replacement scene, while the old
+    # focused child is still waiting for the safe, scene-owned cleanup turn.
+    assert scene._edit_proxies
+    assert len(scene._retired_editor_widgets) == editor_count
+    during = [widget for widget in QApplication.allWidgets()
+              if widget.objectName() == "hopStrengthEditor"]
+    assert len(during) == len(before) + editor_count
+
+    QApplication.processEvents()
+    after = [widget for widget in QApplication.allWidgets()
+             if widget.objectName() == "hopStrengthEditor"]
+    assert len(after) == len(scene._edit_proxies)
+    assert scene._retired_editor_widgets == []
+
+
 def test_focused_strength_editor_is_revealed_after_panning():
     """Focusing a field near an edge scrolls it fully into the viewport."""
     _app, win, ctrl = _window()

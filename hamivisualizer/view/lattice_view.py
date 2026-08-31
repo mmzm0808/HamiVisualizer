@@ -541,6 +541,15 @@ class LatticeView(QGraphicsScene):
         self._editor_reflow_timer = QTimer(self)
         self._editor_reflow_timer.setSingleShot(True)
         self._editor_reflow_timer.timeout.connect(self._reflow_editors)
+        # Embedded QWidget proxies need a two-phase retirement on Windows:
+        # detach them during a rebuild and flush their deferred deletion only
+        # after the current mouse/paint callback has returned.
+        self._retired_editor_widgets: list[QLineEdit] = []
+        self._editor_cleanup_timer = QTimer(self)
+        self._editor_cleanup_timer.setSingleShot(True)
+        self._editor_cleanup_timer.timeout.connect(
+            self._flush_retired_editor_widgets
+        )
         # The hover badge is removed after the active mouse event.  Keep that
         # deferred callback owned by the scene instead of using the static
         # ``QTimer.singleShot`` helper, so a rapid document rebuild/window
@@ -1790,7 +1799,13 @@ class LatticeView(QGraphicsScene):
         for proxy in old_proxies:
             widget = proxy.widget()
             if widget is not None:
+                # Suppress focus/hover callbacks while the native child is
+                # being detached.  The rebuilt scene creates a fresh editor
+                # with the same public signals and accepted value.
+                widget.blockSignals(True)
+                widget.clearFocus()
                 widget.hide()
+                proxy.setVisible(False)
                 proxy.setWidget(None)
                 widget.deleteLater()
                 old_widgets.append(widget)
@@ -1805,14 +1820,13 @@ class LatticeView(QGraphicsScene):
         self._edit_leader_links.clear()
         self._edit_proxy_anchors.clear()
         self.clear()
-        # Flush only the widgets detached by this rebuild, and only after
-        # their proxy items have left the scene.  Sending DeferredDelete while
-        # a live QGraphicsProxyWidget still belongs to the scene can invalidate
-        # its native backing store on Windows; deferring the flush until after
-        # ``clear`` keeps QApplication.allWidgets() free of stale editors
-        # without racing the viewport resize path.
-        for widget in old_widgets:
-            QCoreApplication.sendPostedEvents(widget, QEvent.DeferredDelete)
+        # Keep detached wrappers alive until a scene-owned timer reaches the
+        # next event-loop turn.  Never synchronously flush DeferredDelete from
+        # this method: it is also called by Qt input/focus callbacks, where
+        # native proxy destruction can be an access violation on Windows.
+        self._retired_editor_widgets.extend(old_widgets)
+        if old_widgets:
+            self._editor_cleanup_timer.start(0)
         self._hover_hop_label = None
         self._hover_hop_label_bg = None
         pal = Palette()
@@ -2517,6 +2531,26 @@ class LatticeView(QGraphicsScene):
         """Coalesce editor resize callbacks onto this scene's Qt lifetime."""
         if self._editor_reflow_timer is not None:
             self._editor_reflow_timer.start(0)
+
+    def _flush_retired_editor_widgets(self) -> None:
+        """Dispose detached proxy children after the active Qt event.
+
+        ``set_data`` can be reached from a focus, mouse-release or paint
+        callback.  Flushing ``DeferredDelete`` from inside that callback lets
+        Windows' Qt backing-store code observe a half-destroyed proxy and can
+        terminate the process with an access violation.  A scene-owned timer
+        gives the callback a clean return boundary before processing only the
+        editors retired by the rebuild.
+        """
+        retired = tuple(self._retired_editor_widgets)
+        self._retired_editor_widgets.clear()
+        for widget in retired:
+            try:
+                QCoreApplication.sendPostedEvents(widget, QEvent.DeferredDelete)
+            except RuntimeError:
+                # A platform teardown may already have destroyed the QObject;
+                # stale Python wrappers must never make a later rebuild fail.
+                continue
 
     def _refresh_editor_sizes(self) -> None:
         """Re-measure embedded fields after a global font/UI-scale change.

@@ -1646,9 +1646,11 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.panel._fit_param_table_columns)
         # Embedded lattice coefficient editors are fixed-pixel widgets.  A
         # stylesheet/font change can deliver their final resize event only
-        # after the first layout pass; reflow once more on the next event-loop
-        # turn so the QGraphicsProxyWidget bounds match the painted child.
-        QTimer.singleShot(0, self.lattice_scene._reflow_editors)
+        # after the first layout pass; ask the scene-owned coalescing timer to
+        # reflow once more.  Keeping the callback owned by the scene avoids a
+        # free-floating single-shot callback racing proxy destruction during
+        # rapid mode switches on Windows.
+        self.lattice_scene._schedule_editor_reflow()
         for group in (
             self.panel.boundary_group, self.panel.params_group, self.panel.energy_group,
             self.panel.display_group, self.panel.sites_group, self.panel.hops_group,

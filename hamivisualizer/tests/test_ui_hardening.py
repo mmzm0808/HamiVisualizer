@@ -2613,7 +2613,8 @@ def test_dense_all_coefficient_editors_hide_crossing_leaders_until_inspected():
                and horizontal.isVisible() == (int(proxy.data(1)) == selected_row)
                for diagonal, horizontal, _mx, _my, proxy in links)
 
-    scene._set_hovered_hop_row(None)
+    scene.clear_hover_hop_preview()
+    QApplication.processEvents()
     assert not any(diagonal.isVisible() or horizontal.isVisible()
                    for diagonal, horizontal, *_rest in links)
 
@@ -2730,6 +2731,56 @@ def test_dense_edit_mode_hides_details_until_explicitly_revealed():
     QApplication.processEvents()
     assert all(item.opacity() == pytest.approx(0.38)
                for item in scene.items() if item.data(0) == "physical-edge-nnn")
+
+
+def test_hovering_bond_shows_transient_coefficient_without_prebuilding_editors():
+    """Hover preview is immediate; clicking remains the promotion point."""
+    QApplication.instance() or QApplication([])
+    scene = LatticeView()
+    scene.set_edit_context(
+        [(float(i), 0.0, "A" if i % 2 == 0 else "B") for i in range(5)],
+        hops=[{"row": i, "from_site": i, "to_site": i + 1,
+               "off_x": 0, "off_y": 0, "strength": 2.5}
+               for i in range(4)],
+    )
+    scene.set_edit_mode(True)
+    scene.set_data(LatticeSceneData(
+        sites=tuple((float(i), 0.0, str(i + 1), "A" if i % 2 == 0 else "B")
+                    for i in range(5)),
+        edges=tuple((i, i + 1, "NN") for i in range(4)),
+    ))
+    assert scene._edit_proxies == []
+    scene._set_hovered_hop_row(0)
+    preview = [item for item in scene.items()
+               if item.data(0) == "hopping-hover-coefficient"]
+    assert len(preview) == 1
+    assert preview[0].toPlainText() == "2.5"
+    scene.clear_hover_hop_preview()
+    QApplication.processEvents()
+    assert not any(item.data(0) == "hopping-hover-coefficient"
+                   for item in scene.items())
+
+
+def test_edit_rebuild_does_not_leave_snapshot_circle_at_legacy_drag_origin():
+    """Legacy snapshot circles must not duplicate movable edit handles."""
+    QApplication.instance() or QApplication([])
+    scene = LatticeView()
+    scene.set_edit_context(
+        [(0.4, 0.0, "A"), (1.0, 0.0, "B")],
+        cell_vectors=((2.0, 0.0), (0.0, 1.0)),
+        anchor_offset=(0.0, 0.0),
+    )
+    scene.set_snap_reference_sites([(0.0, 0.0), (1.0, 0.0)])
+    scene.set_edit_mode(True)
+    scene.set_data(LatticeSceneData(
+        # This is the pre-drag legacy snapshot: site 0 is still at x=0.
+        sites=((0.0, 0.0, "1", "A"), (1.0, 0.0, "2", "B")),
+        edges=((0, 1, "NN"),),
+    ))
+    snapshot_circles = [item for item in scene.items()
+                        if isinstance(item, QGraphicsEllipseItem)
+                        and item.zValue() == pytest.approx(3.0)]
+    assert snapshot_circles == []
 
 
 def test_reentering_lattice_edit_mode_resets_previous_dense_coefficient_layer():

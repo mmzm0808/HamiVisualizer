@@ -250,6 +250,12 @@ class _EditableSiteItem(QGraphicsEllipseItem):
         return path
 
     def mousePressEvent(self, event):
+        # A pointer can enter a transparent hopping guide on the way to a
+        # nearby site.  Clicking the site is a selection/drag action, not a
+        # request to keep the guide's transient coefficient preview.  Clear
+        # that preview before the item starts its own press gesture so a
+        # harmless site click cannot leave an extra label in the scene.
+        self.editor_scene.clear_hover_hop_preview()
         self._press_pos = self.pos()
         self.setFlag(QGraphicsItem.ItemIsFocusable, True)
         self.setFocus(Qt.MouseFocusReason)
@@ -448,7 +454,11 @@ class _HopStrengthEdit(QLineEdit):
         # boundary calculations (including the bottom border).
         scene = self.owner_scene
         if scene is not None:
-            QTimer.singleShot(0, scene._reflow_editors)
+            # Coalesce resize notifications in the owning scene. A global
+            # single-shot callback can outlive a scene rebuild and race
+            # QGraphicsProxyWidget destruction on Windows; the scene-owned
+            # timer follows the same lifecycle and is stopped on rebuild.
+            scene._schedule_editor_reflow()
 
 
 class LatticeView(QGraphicsScene):
@@ -500,6 +510,7 @@ class LatticeView(QGraphicsScene):
         # This transient row is intentionally separate from the committed
         # active row so moving the pointer never rebuilds or mutates a model.
         self._hovered_hop_row: int | None = None
+        self._hover_hop_label: QGraphicsTextItem | None = None
         self._focused_hop_row: int | None = None
         # QGraphicsProxyWidget has QObject ownership semantics in PySide6;
         # keeping explicit references prevents an input proxy (and its guide)
@@ -526,6 +537,16 @@ class LatticeView(QGraphicsScene):
                                               float, float, QGraphicsProxyWidget]] = []
         self._edit_proxy_anchors: list[tuple[QGraphicsProxyWidget, float, float]] = []
         self._last_editor_layout: tuple[float, list] = (1.0, [])
+        self._editor_reflow_timer = QTimer(self)
+        self._editor_reflow_timer.setSingleShot(True)
+        self._editor_reflow_timer.timeout.connect(self._reflow_editors)
+        # The hover badge is removed after the active mouse event.  Keep that
+        # deferred callback owned by the scene instead of using the static
+        # ``QTimer.singleShot`` helper, so a rapid document rebuild/window
+        # close cannot invoke a bound method on a half-destroyed scene.
+        self._hover_label_remove_timer = QTimer(self)
+        self._hover_label_remove_timer.setSingleShot(True)
+        self._hover_label_remove_timer.timeout.connect(self._drop_hover_hop_label)
         self._cell_vectors = ((1.0, 0.0), (0.0, 1.0))
         self._hop_start: int | None = None
         self._hop_start_endpoint: tuple[int, int, int] | None = None
@@ -1050,7 +1071,84 @@ class LatticeView(QGraphicsScene):
         if normalized == self._hovered_hop_row:
             return
         self._hovered_hop_row = normalized
+        self._clear_hover_hop_label()
+        if normalized is not None and normalized != self._active_hop_row:
+            self._show_hover_hop_label(normalized)
         self._update_edit_leader_visibility()
+
+    def _clear_hover_hop_label(self) -> None:
+        label = self._hover_hop_label
+        if label is not None:
+            # Keep the item alive while Qt is dispatching the hover/mouse
+            # event. Removing it synchronously can invalidate the native
+            # paint item on Windows and cause an access violation.
+            label.setVisible(False)
+
+    def clear_hover_hop_preview(self) -> None:
+        """Clear a preview and remove it after the current Qt event.
+
+        Site presses need the scene item count and hit map to return to their
+        pre-hover state, but deleting the item synchronously from a native
+        mouse dispatch is unsafe on some Windows Qt builds.
+        """
+        self._set_hovered_hop_row(None)
+        self._hover_label_remove_timer.start(0)
+
+    def _drop_hover_hop_label(self) -> None:
+        label = self._hover_hop_label
+        if label is None or label.isVisible():
+            return
+        if label.scene() is self:
+            self.removeItem(label)
+        self._hover_hop_label = None
+
+    def _show_hover_hop_label(self, row: int) -> None:
+        """Show a lightweight coefficient preview over the hovered bond.
+
+        Dense editing deliberately does not pre-create dozens of line-edit
+        widgets.  A transient text item gives immediate feedback on hover;
+        clicking the same guide promotes it to the persistent right-hand
+        editor through :meth:`activate_hop_editor`.
+        """
+        hop = next((item for item in self._editable_hops()
+                    if int(item.get("row", -1)) == int(row)), None)
+        if hop is None:
+            return
+        try:
+            value = f"{float(hop.get('strength', 1.0)):.8g}"
+        except (TypeError, ValueError):
+            value = str(hop.get("strength", ""))
+        preview = self._hover_hop_label
+        if preview is None or preview.scene() is not self:
+            preview = QGraphicsTextItem()
+            self.addItem(preview)
+        preview.setPlainText(value)
+        font = QFont("Segoe UI")
+        font.setPointSizeF(9.0)
+        font.setBold(True)
+        preview.setFont(font)
+        preview.setDefaultTextColor(QColor("#8fd3ff") if self._dark
+                                    else QColor("#155e9a"))
+        preview.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        preview.setZValue(27)
+        preview.setData(0, "hopping-hover-coefficient")
+        preview.setToolTip(f"跃迁 {int(row) + 1} 系数；点击线条后可编辑")
+        # Position near the bond midpoint with a small screen-space lift.
+        try:
+            fr, to = int(hop["from_site"]), int(hop["to_site"])
+            ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
+            (a1x, a1y), (a2x, a2y) = self._cell_vectors
+            ax, ay = self._edit_anchor_offset
+            x1, y1, _ = self._edit_sites[fr]
+            x2, y2, _ = self._edit_sites[to]
+            x1, y1 = x1 + ax, y1 + ay
+            x2 += ax + ox * a1x + oy * a2x
+            y2 += ay + ox * a1y + oy * a2y
+            preview.setPos((x1 + x2) / 2, -(y1 + y2) / 2)
+        except (IndexError, KeyError, TypeError, ValueError):
+            preview.setPos(0.0, 0.0)
+        preview.setVisible(True)
+        self._hover_hop_label = preview
 
     def _update_edit_leader_visibility(self) -> None:
         """Apply progressive disclosure to coefficient leader lines."""
@@ -1633,11 +1731,14 @@ class LatticeView(QGraphicsScene):
 
     def set_data(self, data: LatticeSceneData):
         self._data = data
+        self._editor_reflow_timer.stop()
+        self._hover_label_remove_timer.stop()
         # A rebuild invalidates the old hover target.  Keeping it would make
         # an unrelated new field inherit a leader highlight after a parameter
         # change or theme switch.
         self._hovered_hop_row = None
         self._focused_hop_row = None
+        self._clear_hover_hop_label()
         # QGraphicsProxyWidget embeds a real QWidget into the scene.  Merely
         # dropping our Python references before ``scene.clear()`` is not
         # sufficient on the offscreen/Windows paint paths: the old child can
@@ -1648,19 +1749,14 @@ class LatticeView(QGraphicsScene):
         # current event is finished.  This keeps rebuilds and theme changes
         # visually atomic without changing the editor's public signals.
         old_proxies = tuple(self._edit_proxies)
+        old_widgets = []
         for proxy in old_proxies:
             widget = proxy.widget()
             if widget is not None:
                 widget.hide()
                 proxy.setWidget(None)
                 widget.deleteLater()
-                # ``deleteLater`` is intentionally deferred during normal
-                # interaction, but a rebuild can be immediately followed by
-                # a grab/tab switch before the event loop gets another turn.
-                # Flush only this widget's deferred delete, never the global
-                # queue, so dialogs and unrelated controls keep their normal
-                # Qt lifecycle.
-                QCoreApplication.sendPostedEvents(widget, QEvent.DeferredDelete)
+                old_widgets.append(widget)
         self._edit_proxies.clear()
         self._grid_items.clear()
         self._ghost_items.clear()
@@ -1672,6 +1768,15 @@ class LatticeView(QGraphicsScene):
         self._edit_leader_links.clear()
         self._edit_proxy_anchors.clear()
         self.clear()
+        # Flush only the widgets detached by this rebuild, and only after
+        # their proxy items have left the scene.  Sending DeferredDelete while
+        # a live QGraphicsProxyWidget still belongs to the scene can invalidate
+        # its native backing store on Windows; deferring the flush until after
+        # ``clear`` keeps QApplication.allWidgets() free of stale editors
+        # without racing the viewport resize path.
+        for widget in old_widgets:
+            QCoreApplication.sendPostedEvents(widget, QEvent.DeferredDelete)
+        self._hover_hop_label = None
         pal = Palette()
         if not data.sites:
             self.setSceneRect(QRectF())
@@ -1889,14 +1994,45 @@ class LatticeView(QGraphicsScene):
         # editable disc).  Z-values still keep the dots behind all physics.
         if self.edit_mode:
             self._draw_snap_grid()
+        def belongs_to_edit_handle(x_value: float, y_value: float) -> bool:
+            """Hide only snapshot circles represented by editable handles.
+
+            Do not hide every site in the primitive-cell rectangle: OBC and
+            SEMI scenes legitimately contain read-only sites there.  Matching
+            both the live and edit-session baseline coordinates also covers a
+            legacy model while a drag is between rebuilds, without removing
+            unrelated context sites.
+            """
+            if not self.edit_mode:
+                return False
+            ax, ay = self._edit_anchor_offset
+            candidates = [(float(sx) + ax, float(sy) + ay)
+                          for sx, sy, _sub in self._edit_sites]
+            candidates += [(float(sx) + ax, float(sy) + ay)
+                           for sx, sy in self._snap_reference_sites]
+            return any(math.hypot(float(x_value) - cx,
+                                  float(y_value) - cy) <= 1.0e-7
+                       for cx, cy in candidates)
+
         for _idx, (x, y, label, sub) in enumerate(data.sites):
             y = -y
             rgb = pal.site_a if sub == "A" else pal.site_b
-            circ = QGraphicsEllipseItem(x - r, y - r, 2 * r, 2 * r)
-            circ.setBrush(QBrush(_q(rgb)))
-            circ.setPen(_pen((0.75, 0.8, 0.85) if self._dark else (0, 0, 0), 0.6))
-            circ.setZValue(3)
-            self.addItem(circ)
+            # In edit mode the movable handle is the single source of truth
+            # for a site's position.  Painting the normal (data snapshot)
+            # circle as well leaves a stale circle at the old coordinate for
+            # one or more frames while a drag is being committed, which is
+            # especially visible when loading a legacy model.  The editable
+            # handle is drawn below after the complete scene has been built.
+            # In a constrained edit session the primitive-cell handles are
+            # authoritative.  Suppress the corresponding snapshot circles;
+            # otherwise a legacy document whose data snapshot still contains
+            # the pre-drag coordinate paints a ghost atom at the old position.
+            if not belongs_to_edit_handle(x, -y):
+                circ = QGraphicsEllipseItem(x - r, y - r, 2 * r, 2 * r)
+                circ.setBrush(QBrush(_q(rgb)))
+                circ.setPen(_pen((0.75, 0.8, 0.85) if self._dark else (0, 0, 0), 0.6))
+                circ.setZValue(3)
+                self.addItem(circ)
             if not self.edit_mode:
                 t = QGraphicsTextItem(str(label))
                 t.setDefaultTextColor(QColor(255, 255, 255))
@@ -2276,6 +2412,7 @@ class LatticeView(QGraphicsScene):
 
             proxy.setPos(editor_anchor_x, editor_anchor_y)
             proxy.setZValue(25)
+            proxy.setVisible(row in visible_rows)
             self.addItem(proxy)
             self._edit_proxies.append(proxy)
             # Adjacent collinear bonds otherwise look like one continuous
@@ -2337,6 +2474,11 @@ class LatticeView(QGraphicsScene):
             if view.isVisible() and not view.viewport().size().isEmpty():
                 self.set_zoom_level(abs(float(view.transform().m11())), view)
                 return
+
+    def _schedule_editor_reflow(self) -> None:
+        """Coalesce editor resize callbacks onto this scene's Qt lifetime."""
+        if self._editor_reflow_timer is not None:
+            self._editor_reflow_timer.start(0)
 
     def _refresh_editor_sizes(self) -> None:
         """Re-measure embedded fields after a global font/UI-scale change.
@@ -2649,7 +2791,7 @@ class LatticeView(QGraphicsScene):
         # cursor end, making a valid value look clipped even when the field is
         # wide enough to show it in full.
         editor.setCursorPosition(0)
-        QTimer.singleShot(0, self._reflow_editors)
+        self._schedule_editor_reflow()
         editor.setProperty("hvisualizer-original-strength", value)
         editor.setProperty("hvisualizer-accepted-text", display)
         self._pending_hop_edit = None
@@ -2668,4 +2810,4 @@ class LatticeView(QGraphicsScene):
         editor.setProperty("hvisualizer-accepted-text", old_text)
         editor.setCursorPosition(0)
         self._pending_hop_edit = None
-        QTimer.singleShot(0, self._reflow_editors)
+        self._schedule_editor_reflow()

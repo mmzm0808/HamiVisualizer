@@ -112,6 +112,10 @@ def main() -> int:
         help="In lattice edit mode, reveal the compact editor for this hopping row.",
     )
     parser.add_argument(
+        "--hover-hop-demo", action="store_true",
+        help="In lattice edit mode, render the transient coefficient badge shown on bond hover.",
+    )
+    parser.add_argument(
         "--show-all-hop-editors", action="store_true",
         help="In lattice edit mode, intentionally render every hopping editor.",
     )
@@ -664,7 +668,8 @@ def main() -> int:
         window.wf_view.select_site(args.wavefunction_site - 1)
     if (args.edit_lattice or args.drag_snap_demo or args.spacing_edit_demo
             or args.hop_editor_demo or args.independent_parameter_demo
-            or args.reverse_offset_demo or args.complex_amplitude_demo):
+            or args.reverse_offset_demo or args.complex_amplitude_demo
+            or args.hover_hop_demo):
         window.panel.params_group.setExpanded(False)
         window.panel.energy_group.setExpanded(False)
         window.panel.display_group.setExpanded(False)
@@ -873,6 +878,16 @@ def main() -> int:
         window._set_theme_mode(mode)
         window._set_ui_scale(ui_scale, persist=False)
         prepare_view()
+        if args.hover_hop_demo:
+            guides = getattr(window.lattice_scene, "_edit_guides", ())
+            if not guides:
+                raise ValueError("--hover-hop-demo requires at least one editable bond")
+            # Re-apply after each theme/scale rebuild: set_data intentionally
+            # clears transient presentation state, so the frame documents the
+            # actual hover badge rather than a stale item from the prior pass.
+            window.lattice_scene._set_hovered_hop_row(int(guides[0].row))
+            window.statusBar().showMessage("悬停跃迁线可查看系数；点击线条后固定并编辑")
+            QApplication.processEvents()
         if args.restore_topology_demo:
             # UI scaling itself writes a short status message. Re-assert the
             # recovery result immediately before the screenshot so the frame

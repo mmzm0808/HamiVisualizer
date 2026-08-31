@@ -1463,6 +1463,7 @@ class ControlPanel(QWidget):
             return None
         _selected_table_row, selected = selected_entry
         group_name = selected["name"]
+        relation_key = self._editor_relation_key(selected)
         params = self.get_params()
         selected_expr = parse_expression(selected["amplitude"])
         free = sorted(str(symbol) for symbol in selected_expr.free_symbols)
@@ -1473,6 +1474,10 @@ class ControlPanel(QWidget):
             (table_row, hop) for table_row, hop in parsed_rows
             if hop["name"] == group_name
         ]
+        relation_entries = [
+            (table_row, hop) for table_row, hop in group_entries
+            if self._editor_relation_key(hop) == relation_key
+        ]
         physical: dict[int, Fraction] = {}
         signs: dict[int, int] = {}
         for table_row, hop in group_entries:
@@ -1481,7 +1486,9 @@ class ControlPanel(QWidget):
                 self.set_error("带复振幅的跃迁请使用 phase 列编辑，不能只改强度")
                 return None
             signs[table_row] = -1 if value.real < 0 else 1
-            magnitude = strength if table_row == int(row) else abs(value.real)
+            magnitude = strength if any(
+                table_row == relation_row for relation_row, _ in relation_entries
+            ) else abs(value.real)
             physical[table_row] = Fraction(f"{magnitude:.12g}").limit_denominator(100000)
         denominator = 1
         for value in physical.values():
@@ -1536,6 +1543,26 @@ class ControlPanel(QWidget):
         return (
             f"已归一化「{group_name}」（幅度）：" + "；".join(relation_parts)
             + f"；基准 {parameter}={float(base):g}"
+        )
+
+    @staticmethod
+    def _editor_relation_key(hop: dict) -> tuple:
+        """Match canvas relation identity, including reverse-offset folding.
+
+        The amplitude multiplier is intentionally ignored, while the named
+        parameter and phase family remain part of the identity.  This keeps
+        t/t2 and distinct phase terms independent and makes a representative
+        editor write back to every equivalent directed row.
+        """
+        fr, to = int(hop.get("from_site", -1)), int(hop.get("to_site", -1))
+        ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
+        geometry = min((fr, to, ox, oy), (to, fr, -ox, -oy))
+        normalized = lambda value, default: str(
+            hop.get(value, default) if hop.get(value, default) is not None else default
+        ).strip().replace(" ", "")
+        return geometry + (
+            normalized("name", "t"), normalized("phase_mode", "none"),
+            normalized("phase", "0"),
         )
 
     def _get_hop_rows_with_indices(self) -> list[tuple[int, dict]]:

@@ -1697,6 +1697,20 @@ def test_edit_strength_rail_keeps_independent_parameters_on_same_line_editable()
                for proxy in scene._edit_proxies)
 
 
+def test_editor_geometry_key_canonicalizes_reverse_positive_offsets():
+    """正偏移的反向胞间行也必须归并到同一条物理线。"""
+    forward = {"from_site": 1, "to_site": 0, "off_x": 0, "off_y": 1}
+    reverse = {"from_site": 0, "to_site": 1, "off_x": 0, "off_y": -1}
+    assert LatticeView._editor_geometry_key(forward) == (
+        LatticeView._editor_geometry_key(reverse)
+    )
+    positive_x = {"from_site": 1, "to_site": 0, "off_x": 2, "off_y": 0}
+    negative_x = {"from_site": 0, "to_site": 1, "off_x": -2, "off_y": 0}
+    assert LatticeView._editor_geometry_key(positive_x) == (
+        LatticeView._editor_geometry_key(negative_x)
+    )
+
+
 def test_compact_editors_explain_adjacent_intra_and_intercell_bonds():
     """共线的 SSH 两条键也要能一眼分辨胞内/胞间关系。"""
     _app, win, ctrl = _window()

@@ -123,6 +123,10 @@ def main() -> int:
         "--independent-parameter-demo", action="store_true",
         help="Render two independent amplitudes that share one geometric bond.",
     )
+    parser.add_argument(
+        "--reverse-offset-demo", action="store_true",
+        help="Render reverse rows of one positive-offset inter-cell bond.",
+    )
     parser.add_argument("--bond-ratio-demo", action="store_true")
     parser.add_argument(
         "--oblique-a1-demo", action="store_true",
@@ -292,6 +296,27 @@ def main() -> int:
              "phase_mode": "none", "phase": "0", "phase_sign": 1},
         ]
         demo["params"] = {"t": 1.0, "t2": 0.25}
+        controller.apply_document(demo)
+    if args.reverse_offset_demo:
+        # The two rows are Hermitian reverse descriptions of one +1-cell
+        # bond.  This is intentionally separate from the built-in templates
+        # so the screenshot proves the canonicalization rule directly.
+        demo = template_document(
+            "空白自定义", nx=4, ny=4, boundary_kind="semi", connectivity="仅格点",
+        )
+        demo["sites"] = [
+            {"x": 0.2, "y": 0.0, "sublattice": "A"},
+            {"x": 0.6, "y": 0.8, "sublattice": "B"},
+        ]
+        demo["hops"] = [
+            {"name": "t", "from_site": 1, "to_site": 0,
+             "cell_offset": [1, 0], "amplitude": "-t",
+             "phase_mode": "none", "phase": "0", "phase_sign": 1},
+            {"name": "t", "from_site": 0, "to_site": 1,
+             "cell_offset": [-1, 0], "amplitude": "-t",
+             "phase_mode": "none", "phase": "0", "phase_sign": 1},
+        ]
+        demo["params"] = {"t": 1.0}
         controller.apply_document(demo)
     if args.resource_hint_demo:
         # Exercise the live warning path without allocating the intentionally
@@ -616,7 +641,8 @@ def main() -> int:
             raise ValueError("波函数尚未完成，无法检查指定格点")
         window.wf_view.select_site(args.wavefunction_site - 1)
     if (args.edit_lattice or args.drag_snap_demo or args.spacing_edit_demo
-            or args.hop_editor_demo or args.independent_parameter_demo):
+            or args.hop_editor_demo or args.independent_parameter_demo
+            or args.reverse_offset_demo):
         window.panel.params_group.setExpanded(False)
         window.panel.energy_group.setExpanded(False)
         window.panel.display_group.setExpanded(False)
@@ -698,6 +724,10 @@ def main() -> int:
     if args.independent_parameter_demo:
         window.statusBar().showMessage(
             "同一几何线包含独立参数 t 与 t2；两个输入框分别可编辑"
+        )
+    if args.reverse_offset_demo:
+        window.statusBar().showMessage(
+            "正偏移胞间键的反向表格行已合并；右侧仅保留一个输入框"
         )
     QApplication.processEvents()
     if args.show_all_hop_editors:

@@ -1967,15 +1967,18 @@ class LatticeView(QGraphicsScene):
 
     @staticmethod
     def _editor_geometry_key(hop: dict) -> tuple:
-        """Return the canonical geometric part of an editable relation."""
+        """Return the canonical geometric part of an editable relation.
+
+        The reverse of ``(fr, to, dx, dy)`` is
+        ``(to, fr, -dx, -dy)``.  Choosing the lexicographically smaller tuple
+        handles positive as well as negative offsets; a sign-only heuristic
+        misses reverse rows such as ``1 → 0, dy=+1``.
+        """
         fr, to = int(hop.get("from_site", -1)), int(hop.get("to_site", -1))
         ox, oy = int(hop.get("off_x", 0)), int(hop.get("off_y", 0))
-        reverse = ox < 0 or (ox == 0 and oy < 0) or (
-            ox == 0 and oy == 0 and fr > to
-        )
-        if reverse:
-            fr, to, ox, oy = to, fr, -ox, -oy
-        return (fr, to, ox, oy)
+        forward = (fr, to, ox, oy)
+        reverse = (to, fr, -ox, -oy)
+        return min(forward, reverse)
 
     @staticmethod
     def _editor_parameter_key(hop: dict) -> tuple:

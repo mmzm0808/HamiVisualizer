@@ -2874,10 +2874,108 @@ def test_bond_hover_preview_includes_identity_and_coefficient():
     preview = scene._hover_hop_label
     assert preview is not None and preview.isVisible()
     text = preview.toPlainText()
-    assert text.startswith(f"#{row + 1} · ")
+    assert text.startswith("悬停预览\n")
+    assert f"#{row + 1} · " in text
     assert "→" in text
-    assert "\n" in text
-    assert text.splitlines()[-1]
+    assert "\n系数 = " in text
+
+
+def test_hover_preview_card_is_read_only_and_never_arms_canvas_pan():
+    """Clicking the amber preview cannot turn into an accidental pan gesture."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "SSH", connectivity="最近邻", boundary_kind="semi", nx=4, ny=4,
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+
+    scene, view = win.lattice_scene, win.lattice_gv
+    row = int(scene._edit_guides[0].row)
+    scene._set_hovered_hop_row(row)
+    QApplication.processEvents()
+    preview = scene._hover_hop_label
+    assert preview is not None and preview.isVisible()
+    background = scene._hover_hop_label_bg
+    assert background is not None and background.isVisible()
+    assert preview.acceptedMouseButtons() == Qt.NoButton
+    assert background.acceptedMouseButtons() == Qt.NoButton
+    assert preview.data(0) == "hopping-hover-coefficient"
+    assert background.data(0) == "hopping-hover-coefficient-bg"
+
+    # ``ItemIgnoresTransformations`` keeps the card at a fixed pixel size;
+    # its sceneBoundingRect therefore contains the unscaled 212×50 local
+    # coordinates and is not a usable viewport hit rectangle.  Map the
+    # item's scene anchor, then add half of the actual widget-sized card.
+    top_left = view.mapFromScene(preview.pos())
+    point = top_left + QPoint(int(preview.boundingRect().width() // 2),
+                              int(preview.boundingRect().height() // 2))
+    before = (view.horizontalScrollBar().value(), view.verticalScrollBar().value())
+    # Use a real press/release pair at the card's screen footprint.  A
+    # regression here used to arm the view's manual pan state because the
+    # card sat above an otherwise empty canvas.
+    QTest.mousePress(view.viewport(), Qt.LeftButton, pos=point)
+    assert view._pan_press_pos is None
+    QTest.mouseRelease(view.viewport(), Qt.LeftButton, pos=point)
+    after = (view.horizontalScrollBar().value(), view.verticalScrollBar().value())
+    assert after == before
+
+
+def test_hover_hysteresis_keeps_one_target_stable_at_crossing():
+    """A sub-pixel move through a junction must not flash a second guide."""
+    _app = QApplication.instance() or QApplication([])
+    scene = LatticeView()
+    # Two diagonal bonds cross at the same midpoint.  This is the minimal
+    # geometry that used to make nearest-distance tie breaking alternate
+    # between two transparent edit guides while the pointer moved.
+    scene.set_edit_context(
+        [(0.0, 0.0, "A"), (1.0, 1.0, "B"),
+         (0.0, 1.0, "A"), (1.0, 0.0, "B")],
+        hops=[
+            {"row": 0, "from_site": 0, "to_site": 1,
+             "off_x": 0, "off_y": 0, "strength": 1.0},
+            {"row": 1, "from_site": 2, "to_site": 3,
+             "off_x": 0, "off_y": 0, "strength": 1.0},
+        ],
+        cell_vectors=((2.0, 0.0), (0.0, 2.0)),
+    )
+    scene.set_edit_mode(True)
+    scene.set_data(LatticeSceneData(
+        sites=((0.0, 0.0, "1", "A"), (1.0, 1.0, "2", "B"),
+               (0.0, 1.0, "3", "A"), (1.0, 0.0, "4", "B")),
+        edges=((0, 1, "NN"), (2, 3, "NN")),
+    ))
+    view = ZoomGraphicsView(scene)
+    view.resize(800, 600)
+    view.show()
+    view.fitInView(scene.sceneRect(), Qt.KeepAspectRatio)
+    QApplication.processEvents()
+
+    first, second = scene._edit_guides
+    crossing = first.line().center()
+    scene.handle_viewport_hover(view, view.mapFromScene(crossing))
+    first_row = scene.hovered_hop_row
+    assert first_row == first.row
+
+    # Move only one device pixel.  Both guides remain within the hit radius,
+    # but the hysteresis margin keeps the original target stable.
+    near_crossing = view.mapFromScene(crossing) + QPoint(1, 0)
+    scene.handle_viewport_hover(view, near_crossing)
+    assert scene.hovered_hop_row == first_row
+    assert sum(guide.pen().color().alpha() > 0 for guide in scene._edit_guides) == 1
+
+    # Once the pointer is clearly on the other bond, selection still changes
+    # normally; hysteresis is only a small overlap guard, not a lock.
+    line = second.line()
+    target = QPointF(
+        line.p1().x() * 0.25 + line.p2().x() * 0.75,
+        line.p1().y() * 0.25 + line.p2().y() * 0.75,
+    )
+    scene.handle_viewport_hover(view, view.mapFromScene(target))
+    assert scene.hovered_hop_row == second.row
 
 
 def test_clicked_hop_editor_follows_selected_bond_and_explains_identity():
@@ -2971,8 +3069,8 @@ def test_hovering_bond_shows_transient_coefficient_without_prebuilding_editors()
                if item.data(0) == "hopping-hover-coefficient"]
     assert len(preview) == 1
     preview_text = preview[0].toPlainText()
-    assert preview_text.startswith("#1 · 1→2 · 内")
-    assert preview_text.splitlines()[-1] == "2.5"
+    assert preview_text.startswith("悬停预览\n#1 · 1→2 · 内")
+    assert preview_text.splitlines()[-1] == "系数 = 2.5"
     badge_background = [item for item in scene.items()
                         if item.data(0) == "hopping-hover-coefficient-bg"]
     assert len(badge_background) == 1

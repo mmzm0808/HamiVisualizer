@@ -151,6 +151,15 @@ def _point_segment_distance(px: float, py: float, x1: float, y1: float,
     return math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
 
 
+# At a honeycomb/Kagome junction several transparent edit guides can be only
+# a few device pixels apart.  Switching to whichever guide happens to win a
+# one-pixel distance comparison makes the untouched bonds appear to flicker
+# while the pointer is travelling through that junction.  Keep the current
+# target until the new candidate is meaningfully closer; this is deliberately
+# expressed in viewport pixels so the behaviour is independent of zoom/DPI.
+HOVER_SWITCH_MARGIN_PX = 2.5
+
+
 class _EditableSiteItem(QGraphicsEllipseItem):
     """A unit-cell handle that snaps unless Alt is held."""
 
@@ -1076,7 +1085,22 @@ class LatticeView(QGraphicsScene):
                     0 if item[1] == self._hovered_hop_row else 1,
                     item[1],
                 ))
-                hit_row = candidates[0][1]
+                best_distance, best_row = candidates[0]
+                # Hysteresis is important at a junction: retaining the
+                # existing row for a small overlap region makes only the
+                # actually inspected bond stay highlighted instead of
+                # alternating between neighbouring transparent targets.
+                current_distance = next(
+                    (distance for distance, row in candidates
+                     if row == self._hovered_hop_row),
+                    None,
+                )
+                if (current_distance is not None
+                        and current_distance <= best_distance
+                        + HOVER_SWITCH_MARGIN_PX):
+                    hit_row = self._hovered_hop_row
+                else:
+                    hit_row = best_row
         self._set_hovered_hop_row(hit_row)
 
     @property
@@ -1206,18 +1230,26 @@ class LatticeView(QGraphicsScene):
         if background is None or background.scene() is not self:
             background = QGraphicsRectItem()
             self.addItem(background)
-        preview.setPlainText(f"{identity}\n{value}")
+        # Make this unmistakably a read-only hover preview rather than a
+        # second coefficient field.  The persistent editor on the rail keeps
+        # its blue input styling; this card uses an amber accent and an
+        # explicit “悬停预览” label so two nearby rectangles can never be
+        # mistaken for duplicate inputs.
+        preview.setPlainText(f"悬停预览\n{identity}\n系数 = {value}")
         font = QFont("Segoe UI")
         font.setPointSizeF(9.0)
         font.setBold(True)
         preview.setFont(font)
-        preview.setDefaultTextColor(QColor("#8fd3ff") if self._dark
-                                    else QColor("#155e9a"))
+        preview.setDefaultTextColor(QColor("#f6c96b") if self._dark
+                                    else QColor("#9a5b00"))
         preview.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
         preview.setZValue(27)
         preview.setData(0, "hopping-hover-coefficient")
+        preview.setAcceptedMouseButtons(Qt.NoButton)
+        preview.setAcceptHoverEvents(False)
+        preview.setCursor(Qt.ArrowCursor)
         preview.setToolTip(
-            f"{identity}；系数 {value}；点击线条后可编辑"
+            f"{identity}；系数 {value}；这是悬停预览，点击对应线条后可编辑"
         )
         # A small pill-shaped background makes the transient value discoverable
         # on both themes without turning it into another interactive widget.
@@ -1225,15 +1257,17 @@ class LatticeView(QGraphicsScene):
         # so it cannot steal the guide click or arm canvas panning.
         background.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
         background.setBrush(
-            QBrush(QColor(24, 36, 52, 236) if self._dark
-                   else QColor(255, 255, 255, 242))
+            QBrush(QColor(58, 47, 27, 244) if self._dark
+                   else QColor(255, 248, 226, 246))
         )
         background.setPen(
-            _pen((0.28, 0.63, 0.88) if self._dark
-                 else (0.08, 0.37, 0.62), 0.8)
+            _pen((0.86, 0.62, 0.22) if self._dark
+                 else (0.62, 0.36, 0.04), 0.9)
         )
         background.setZValue(26.5)
         background.setAcceptedMouseButtons(Qt.NoButton)
+        background.setAcceptHoverEvents(False)
+        background.setCursor(Qt.ArrowCursor)
         background.setData(0, "hopping-hover-coefficient-bg")
         # Position near the bond midpoint with a small screen-space lift.
         try:

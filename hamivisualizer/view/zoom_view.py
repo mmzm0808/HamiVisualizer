@@ -99,6 +99,13 @@ class ZoomGraphicsView(QGraphicsView):
                 # editor/endpoint action.
                 topology_hit = hit_kind in {
                     "hopping-guide", "ghost-endpoint", "wavefunction-site",
+                    # The transient coefficient card is deliberately
+                    # read-only, but it sits above the scene.  Treating it
+                    # as a topology hit prevents a click on the card from
+                    # arming canvas panning and makes it safe to move from
+                    # the card onto its source bond.
+                    "hopping-hover-coefficient",
+                    "hopping-hover-coefficient-bg",
                 }
                 movable_hit = (
                     getattr(scene, "edit_mode", False)

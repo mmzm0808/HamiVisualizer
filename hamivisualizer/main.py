@@ -163,6 +163,7 @@ def main():
     except RuntimeError as exc:
         print(f"HamiVisualizer startup blocked:\n{exc}", file=sys.stderr)
         return 2
+    from PySide6.QtCore import QThreadPool
     from PySide6.QtWidgets import QApplication, QStyleFactory
 
     if __package__ in (None, ""):
@@ -188,7 +189,18 @@ def main():
     win.enable_workspace_mode(win.controller)
     win.resize(1360, 900)
     win.show()
-    return app.exec()
+    # QApplication can also quit through a platform/window-manager action
+    # that does not pass through every MainWindow close path.  Register the
+    # same idempotent controller shutdown as a final safety net, then drain
+    # the global pool after the event loop returns.  NumPy/LAPACK runnables
+    # cannot be force-stopped safely; waiting here keeps the interpreter from
+    # unloading Qt/NumPy native libraries while a worker is still executing.
+    app.aboutToQuit.connect(win.controller.shutdown)
+    try:
+        return app.exec()
+    finally:
+        win.controller.shutdown()
+        QThreadPool.globalInstance().waitForDone()
 
 
 if __name__ == "__main__":

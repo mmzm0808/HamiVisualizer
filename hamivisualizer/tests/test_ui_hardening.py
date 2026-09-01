@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np
 import pytest
 import sympy as sp
-from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRectF, QThreadPool, Qt
 from PySide6.QtGui import QCloseEvent, QMouseEvent, QPointingDevice
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -49,8 +49,10 @@ from hamivisualizer.model.hopping import HoppingTerm
 from hamivisualizer.model.lattice import Lattice, Site
 from hamivisualizer.model.expression import evaluate_expression
 from hamivisualizer.model.templates import TEMPLATE_NAMES, template_document
-from hamivisualizer.model.workspace import load_preferences
-from hamivisualizer.view.main_window import MainWindow
+from hamivisualizer.model.workspace import (
+    DocumentHistory, ModelSessionData, load_preferences,
+)
+from hamivisualizer.view.main_window import MainWindow, _Session
 from hamivisualizer.view.dialogs import HoppingDialog, TemplateDialog
 from hamivisualizer.view.matrix_view import MARGIN, MatrixView, RASTER_THRESHOLD
 from hamivisualizer.view.band_view import BandView
@@ -357,6 +359,30 @@ def test_closing_window_detaches_inflight_spectral_worker_signals():
     # strong reference without invoking any GUI callback.
     worker.signals.done.emit()
     assert worker not in _DETACHED_SPECTRAL_WORKERS
+
+
+def test_hidden_comparison_preview_shuts_down_async_spectral_worker():
+    """A lazily-built large comparison preview cannot outlive its window."""
+    _app = QApplication.instance() or QApplication([])
+    win = MainWindow()
+    document = template_document(
+        "方格", nx=9, ny=9, boundary_kind="obc", connectivity="最近邻",
+    )
+    session = _Session(
+        ModelSessionData(name="large-preview"),
+        document,
+        DocumentHistory(10),
+    )
+
+    win._build_preview_cache(session)
+
+    # 9×9 reaches the asynchronous OBC threshold.  The preview controller is
+    # already detached when this method returns; waiting confirms that the
+    # direct ``done`` release does not depend on another GUI event turn.
+    assert set(session.cache) == {"matrix", "lattice", "band", "wavefunction"}
+    QThreadPool.globalInstance().waitForDone(30_000)
+    assert not _DETACHED_SPECTRAL_WORKERS
+    win.close()
 
 
 def test_dimension_sliders_and_inputs_stay_in_sync_without_old_small_cap():
@@ -1746,7 +1772,7 @@ def test_edit_strength_rail_keeps_independent_parameters_on_same_line_editable()
     assert len(scene._edit_proxies) == 2
     assert len(scene._edit_leader_links) == 2
     badges = [badge.toPlainText() for badge, _proxy in scene._edit_relation_badges]
-    assert badges == ["胞内 · t", "胞内 · t2"]
+    assert badges == ["#1 · 1→2 · 内 · t", "#2 · 1→2 · 内 · t2"]
     assert all("已合并等价表格行" not in proxy.widget().toolTip()
                for proxy in scene._edit_proxies)
 
@@ -1799,7 +1825,7 @@ def test_compact_editors_explain_adjacent_intra_and_intercell_bonds():
             ),
         )
         assert [badge.toPlainText() for badge in badges] == [
-            "胞内", "胞间 +1,+0",
+            "#1 · 1→2 · 内", "#2 · 2→1 · 外 +1,+0",
         ]
         assert len(scene._edit_proxies) == 2
         view = win.lattice_gv
@@ -2787,6 +2813,79 @@ def test_dense_coefficient_editor_hover_reveals_its_own_leader():
     assert all(diagonal.isVisible() == (int(proxy.data(1)) == target_row)
                and horizontal.isVisible() == (int(proxy.data(1)) == target_row)
                for diagonal, horizontal, _mx, _my, proxy in links)
+
+
+def test_bond_hover_uses_one_stable_pixel_target_without_guide_flash():
+    """Overlapping transparent guides expose only the nearest hovered row."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "Kagome", connectivity="最近邻+次近邻", boundary_kind="obc", nx=4, ny=4,
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+
+    scene, view = win.lattice_scene, win.lattice_gv
+    guides = list(scene._edit_guides)
+    assert len(guides) > 1
+    assert all(not guide.acceptHoverEvents() for guide in guides)
+
+    first = guides[0]
+    first_point = view.mapFromScene(first.line().center())
+    scene.handle_viewport_hover(view, first_point)
+    first_row = scene.hovered_hop_row
+    assert first_row is not None
+    assert sum(guide.pen().color().alpha() > 0 for guide in guides) == 1
+    assert next(guide for guide in guides if guide.row == first_row).pen().color().alpha() > 0
+
+    # A second pointer update changes one selected row atomically; no stale
+    # guide remains bright while the cursor travels between bonds.
+    second = next(guide for guide in guides if guide.row != first_row)
+    second_point = view.mapFromScene(second.line().center())
+    scene.handle_viewport_hover(view, second_point)
+    second_row = scene.hovered_hop_row
+    assert second_row is not None
+    assert sum(guide.pen().color().alpha() > 0 for guide in guides) == 1
+    assert next(guide for guide in guides if guide.row == second_row).pen().color().alpha() > 0
+
+
+def test_clicked_hop_editor_follows_selected_bond_and_explains_identity():
+    """Switching bonds moves the sole field and updates its identity chip."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "Kagome", connectivity="最近邻+次近邻", boundary_kind="obc", nx=4, ny=4,
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+
+    scene, view = win.lattice_scene, win.lattice_gv
+    rows = [int(guide.row) for guide in scene._edit_guides]
+    assert len(rows) > 2
+    first_row, second_row = rows[0], rows[-1]
+
+    scene.activate_hop_editor(first_row)
+    QApplication.processEvents()
+    first_proxy = scene._edit_proxies[0]
+    first_y = view.mapFromScene(first_proxy.pos()).y()
+    first_badges = [badge.toPlainText() for badge, proxy in scene._edit_relation_badges
+                    if proxy is first_proxy]
+    assert first_badges and first_badges[0].startswith(f"#{first_row + 1} · ")
+
+    scene.activate_hop_editor(second_row)
+    QApplication.processEvents()
+    second_proxy = scene._edit_proxies[0]
+    second_y = view.mapFromScene(second_proxy.pos()).y()
+    second_badges = [badge.toPlainText() for badge, proxy in scene._edit_relation_badges
+                     if proxy is second_proxy]
+    assert second_badges and second_badges[0].startswith(f"#{second_row + 1} · ")
+    assert abs(first_y - second_y) >= 10
 
 
 def test_dense_edit_mode_hides_details_until_explicitly_revealed():

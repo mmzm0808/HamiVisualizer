@@ -181,6 +181,19 @@ class ZoomGraphicsView(QGraphicsView):
             self.viewport().unsetCursor()
         super().mouseReleaseEvent(event)
 
+    def leaveEvent(self, event):
+        """Clear transient scene hover state when the pointer leaves the view."""
+        scene = self.scene()
+        clear_hover = getattr(scene, "clear_hover_hop_preview", None)
+        if callable(clear_hover):
+            try:
+                clear_hover()
+            except (AttributeError, RuntimeError):
+                # Hover feedback is auxiliary UI; a scene being torn down must
+                # never turn a pointer leave into a native Qt exception.
+                pass
+        super().leaveEvent(event)
+
     def wheelEvent(self, event):
         delta = event.angleDelta().y()
         if not delta:

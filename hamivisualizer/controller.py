@@ -422,7 +422,12 @@ class ViewController(QObject):
                 _DETACHED_SPECTRAL_WORKERS.discard(worker)
 
             try:
-                worker.signals.done.connect(release)
+                # ``release`` only mutates the process-local quarantine and
+                # must not wait for the GUI event queue.  A direct connection
+                # lets the worker drop its final strong reference even when
+                # the application is already leaving ``exec()`` (or a hidden
+                # comparison preview never processes another event).
+                worker.signals.done.connect(release, Qt.DirectConnection)
             except RuntimeError:
                 _DETACHED_SPECTRAL_WORKERS.discard(worker)
                 continue

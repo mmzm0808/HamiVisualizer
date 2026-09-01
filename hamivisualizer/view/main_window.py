@@ -1597,14 +1597,24 @@ class MainWindow(QMainWindow):
         preview._dark = self._dark
         controller = ViewController(preview, connect_actions=False)
         preview.controller = controller
-        controller.apply_document(session.document)
-        session.cache = {
-            "matrix": preview.matrix_scene._data,
-            "lattice": preview.lattice_scene._data,
-            "band": preview.band_scene._data,
-            "wavefunction": preview.wf_view._data,
-        }
-        preview.deleteLater()
+        try:
+            controller.apply_document(session.document)
+            session.cache = {
+                "matrix": preview.matrix_scene._data,
+                "lattice": preview.lattice_scene._data,
+                "band": preview.band_scene._data,
+                "wavefunction": preview.wf_view._data,
+            }
+        finally:
+            # A hidden comparison preview is still a real MainWindow with its
+            # own controller.  Large models can start an asynchronous spectral
+            # worker during ``apply_document``; deleting the preview alone
+            # would destroy its QObject tree while NumPy/LAPACK is returning.
+            # Detach that controller before scheduling native destruction so
+            # the same quarantine used by the visible editor protects this
+            # short-lived preview as well.
+            controller.shutdown()
+            preview.deleteLater()
         # 预览窗口构造时会重新应用系统主题，这里恢复主窗口当前主题，
         # 避免用户显式选择的明暗被临时覆盖。
         self._apply_style(self._ui_scale)

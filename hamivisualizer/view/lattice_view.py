@@ -139,6 +139,18 @@ def _strength_editor_width(editor: QLineEdit, text: str) -> int:
     return max(68, min(260, int(math.ceil(measured))))
 
 
+def _point_segment_distance(px: float, py: float, x1: float, y1: float,
+                            x2: float, y2: float) -> float:
+    """Return the distance from a viewport point to a finite line segment."""
+    dx, dy = x2 - x1, y2 - y1
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 1e-12:
+        return math.hypot(px - x1, py - y1)
+    t = ((px - x1) * dx + (py - y1) * dy) / length_sq
+    t = max(0.0, min(1.0, t))
+    return math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
+
+
 class _EditableSiteItem(QGraphicsEllipseItem):
     """A unit-cell handle that snaps unless Alt is held."""
 
@@ -377,7 +389,10 @@ class _EditableHopGuide(QGraphicsLineItem):
         self.editor_scene = scene
         self.row = int(row)
         self.setAcceptedMouseButtons(Qt.LeftButton)
-        self.setAcceptHoverEvents(True)
+        # Hover is resolved by the owning view's pixel hit map.  Item-level
+        # hover events are disabled because several transparent guides can
+        # overlap at one junction and would otherwise flash independently.
+        self.setAcceptHoverEvents(False)
         self.setCursor(Qt.PointingHandCursor)
         self.setZValue(14)
         self.setData(0, "hopping-guide")
@@ -400,18 +415,14 @@ class _EditableHopGuide(QGraphicsLineItem):
         self.setOpacity(1.0)
 
     def hoverEnterEvent(self, event):  # noqa: N802 - Qt override
-        self.setPen(_pen((0.20, 0.68, 0.98), 1.5, Qt.DashLine))
-        self.setOpacity(0.95)
-        # In dense coefficient mode the leader is progressive-disclosure
-        # UI: hovering the physical bond should reveal the matching field
-        # without requiring a click (and without rebuilding the scene).
-        self.editor_scene._set_hovered_hop_row(self.row)
-        super().hoverEnterEvent(event)
+        # Hover is resolved once by ``LatticeView.handle_viewport_hover``.
+        # Per-item hover events are intentionally inert: overlapping,
+        # transparent guide hit areas otherwise enter/leave in rapid
+        # succession and make unrelated bonds flash while the pointer moves.
+        event.accept()
 
     def hoverLeaveEvent(self, event):  # noqa: N802 - Qt override
-        self.set_selected(self.row == self.editor_scene.active_hop_row)
-        self.editor_scene._set_hovered_hop_row(None)
-        super().hoverLeaveEvent(event)
+        event.accept()
 
     def mousePressEvent(self, event):  # noqa: N802 - Qt override
         if event.button() == Qt.LeftButton:
@@ -1023,8 +1034,9 @@ class LatticeView(QGraphicsScene):
         hit map for hover disclosure.  This is only a transient presentation
         state: it never changes the model or rebuilds the scene.
         """
-        if not self._edit_proxy_anchors:
-            return
+        # Resolve the fixed-pixel editor rail first.  Its on-screen footprint
+        # is authoritative because proxy scene bounds are deliberately larger
+        # than the visible widget when ``ItemIgnoresTransformations`` is set.
         hit_row = None
         px, py = int(point.x()), int(point.y())
         for proxy, _x, _y in self._edit_proxy_anchors:
@@ -1040,6 +1052,31 @@ class LatticeView(QGraphicsScene):
                 if row is not None:
                     hit_row = int(row)
                 break
+        # Bond guides are wide transparent hit targets and can overlap at
+        # honeycomb/Kagome junctions. Resolve the nearest guide in viewport
+        # pixels instead of relying on Qt's z-order enter/leave stream. Keep a
+        # small hysteresis for the current row so equal-distance guides do not
+        # alternate while the pointer travels along a bond.
+        if hit_row is None:
+            candidates = []
+            for guide in self._edit_guides:
+                if not guide.isVisible():
+                    continue
+                p1 = view.mapFromScene(QPointF(guide.line().p1()))
+                p2 = view.mapFromScene(QPointF(guide.line().p2()))
+                distance = _point_segment_distance(
+                    float(px), float(py), float(p1.x()), float(p1.y()),
+                    float(p2.x()), float(p2.y()),
+                )
+                if distance <= 9.0:
+                    candidates.append((distance, int(guide.row)))
+            if candidates:
+                candidates.sort(key=lambda item: (
+                    item[0],
+                    0 if item[1] == self._hovered_hop_row else 1,
+                    item[1],
+                ))
+                hit_row = candidates[0][1]
         self._set_hovered_hop_row(hit_row)
 
     @property
@@ -1081,6 +1118,12 @@ class LatticeView(QGraphicsScene):
         if normalized == self._hovered_hop_row:
             return
         self._hovered_hop_row = normalized
+        selected_rows = {
+            value for value in (self._active_hop_row, normalized)
+            if value is not None
+        }
+        for guide in self._edit_guides:
+            guide.set_selected(int(guide.row) in selected_rows)
         self._clear_hover_hop_label()
         if normalized is not None and normalized != self._active_hop_row:
             self._show_hover_hop_label(normalized)
@@ -2467,19 +2510,27 @@ class LatticeView(QGraphicsScene):
             proxy.setVisible(row in visible_rows)
             self.addItem(proxy)
             self._edit_proxies.append(proxy)
-            # Adjacent collinear bonds otherwise look like one continuous
-            # line with two anonymous numeric boxes.  Keep the badge in the
-            # same right-hand rail, but only for compact models where it adds
-            # clarity instead of turning a dense coefficient list into a
-            # second annotation layer.
-            if len(editor_hops) <= 3:
+            # Every visible editor in compact mode gets a compact identity
+            # chip.  Dense mode intentionally keeps the optional “显示全部
+            # 系数” rail quiet (the table/tooltips remain the fallback), but
+            # the default single clicked editor always carries this chip so
+            # its fixed right-hand position is never ambiguous.
+            show_identity_badge = (
+                len(editor_hops) <= 3
+                or (not self._show_all_hop_editors
+                    and row == self._active_hop_row)
+            )
+            if show_identity_badge:
                 relation_text = (
-                    "胞内" if (ox == 0 and oy == 0)
-                    else f"胞间 {ox:+d},{oy:+d}"
+                    "内" if (ox == 0 and oy == 0)
+                    else f"外 {ox:+d},{oy:+d}"
+                )
+                relation_text = (
+                    f"#{row + 1} · {from_site_label}→{to_site_label} · {relation_text}"
                 )
                 # If multiple independent amplitudes share the same geometric
-                # line, keep the compact relation badge but identify the
-                # parameter family so the two fields are not anonymous.
+                # line, include the parameter family so the two fields remain
+                # distinct even when their endpoint pair is identical.
                 if geometry_counts.get(self._editor_geometry_key(hop), 0) > 1:
                     relation_text += f" · {hop.get('name', 't')}"
                 badge = QGraphicsTextItem(relation_text)
@@ -2784,10 +2835,23 @@ class LatticeView(QGraphicsScene):
             _badge_width, badge_height = badge_metrics.get(proxy, (0.0, 0.0))
             badge_extra = badge_height + badge_pad if badge_height > 0 else 0.0
             max_y = rect.bottom() - edge_margin - height_scene
-            py = min(
-                max(cursor_y + badge_extra, rect.top() + edge_margin + badge_extra),
-                max_y,
-            )
+            if len(entries_with_midpoint) == 1 and not self._show_all_hop_editors:
+                # A single active editor should follow the selected bond's
+                # vertical position instead of teleporting to the same rail
+                # centre for every click. Keep it in the right-hand column,
+                # but make the diagonal/horizontal leader read naturally.
+                preferred_y = my - height_scene / 2.0
+                py = min(
+                    max(preferred_y,
+                        rect.top() + edge_margin + badge_extra),
+                    max_y,
+                )
+            else:
+                py = min(
+                    max(cursor_y + badge_extra,
+                        rect.top() + edge_margin + badge_extra),
+                    max_y,
+                )
             chosen = QRectF(panel_right - width_scene, py,
                             width_scene, height_scene)
             proxy.setPos(chosen.topLeft())

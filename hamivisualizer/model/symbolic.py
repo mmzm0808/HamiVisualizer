@@ -56,7 +56,16 @@ class PrettyLatexPrinter(LatexPrinter):
     """
 
     def _print_Symbol(self, expr):
-        return SPECIAL_TEX.get(expr.name, expr.name)
+        special = SPECIAL_TEX.get(expr.name)
+        if special is not None:
+            return special
+        # Parameter tables conventionally use compact names such as t1/t2,
+        # lambda2 or g12.  Matrix mathematics should typeset the numerical
+        # suffix as a true subscript instead of an ordinary baseline digit.
+        match = re.fullmatch(r"([A-Za-z]+)(\d+)", expr.name)
+        if match:
+            return f"{match.group(1)}_{{{match.group(2)}}}"
+        return expr.name
 
     def _print_exp(self, expr):
         arg = sp.expand(expr.exp)

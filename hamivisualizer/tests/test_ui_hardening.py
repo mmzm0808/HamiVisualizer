@@ -44,7 +44,7 @@ from hamivisualizer.controller import (
     _build_lattice_scene,
 )
 from hamivisualizer.model.boundary import Boundary, BoundaryKind
-from hamivisualizer.model.hamiltonian import HamiltonianBuilder
+from hamivisualizer.model.hamiltonian import HamiltonianBuilder, HResult
 from hamivisualizer.model.hopping import HoppingTerm
 from hamivisualizer.model.lattice import Lattice, Site
 from hamivisualizer.model.expression import evaluate_expression
@@ -1554,6 +1554,74 @@ def test_honeycomb_strength_editor_normalizes_to_four_to_one():
     # verify the 4:1 symbolic ratio at the source rows instead of relying on
     # the post-assembly sum.
     assert any("4*t" in str(hop.amplitude) for hop in ctrl._display_hops)
+
+
+@pytest.mark.parametrize(
+    ("template", "connectivity", "params", "expected_symbols"),
+    (
+        ("SSH", "最近邻", {"t1": 1.0, "t2": 1.0}, {"t1", "t2"}),
+        (
+            "Haldane", "最近邻+次近邻",
+            {"t": 1.0, "t2": 1.0, "m": 0.2, "phi": math.pi / 2},
+            {"t", "t2", "m", "phi"},
+        ),
+    ),
+)
+def test_smart_matrix_labels_use_exact_parameter_provenance(
+    template, connectivity, params, expected_symbols,
+):
+    """Equal-valued parameters must retain their source names, not be guessed."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(template, connectivity=connectivity))
+    win.panel.set_params(params, force=True)
+    win.panel.set_symbolic(False)
+    win.panel.set_smart(True)
+    ctrl.rebuild()
+
+    labels = win.matrix_scene._data.smart_labels
+    assert labels
+    symbols = {
+        symbol.name
+        for expression in labels.values()
+        for symbol in expression.free_symbols
+        if symbol.name not in {"kx", "k_x"}
+    }
+    assert expected_symbols <= symbols
+
+
+def test_smart_label_provenance_mismatch_fails_closed_to_numeric():
+    result = HResult(
+        H=np.array([[-1.0]], dtype=complex),
+        Nat=1,
+        provenance={(0, 0, 0): sp.Symbol("t1", real=True)},
+    )
+    assert result.smart_label_expressions({"t1": 0.3}) == {}
+
+
+def test_all_builtin_templates_publish_only_declared_smart_label_symbols():
+    """Every shipped model/boundary must keep smart labels tied to its params."""
+    _app, win, ctrl = _window()
+    for template in TEMPLATE_NAMES:
+        for boundary_kind in ("semi", "obc"):
+            document = template_document(
+                template,
+                boundary_kind=boundary_kind,
+                connectivity="最近邻+次近邻",
+            )
+            ctrl.apply_document(document)
+            win.panel.set_symbolic(False)
+            win.panel.set_smart(True)
+            ctrl.rebuild()
+            labels = win.matrix_scene._data.smart_labels or {}
+            allowed = set(win.panel.get_params()) | {"kx", "k_x"}
+            observed = {
+                symbol.name
+                for expression in labels.values()
+                for symbol in expression.free_symbols
+            }
+            assert observed <= allowed, (template, boundary_kind, observed, allowed)
+            if document.get("hops"):
+                assert labels, (template, boundary_kind)
 
 
 def test_hopping_strength_uses_table_row_after_blank_row():

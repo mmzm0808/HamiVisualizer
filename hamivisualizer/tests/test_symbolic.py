@@ -36,6 +36,12 @@ def test_sym_pretty_known_forms():
     assert "k_{x}" in s and "\\phi" in s
 
 
+def test_sym_pretty_numeric_parameter_suffix_is_a_true_subscript():
+    assert sym_pretty(param("t1")) == "t_{1}"
+    assert sym_pretty(param("t12")) == "t_{12}"
+    assert sym_pretty(param("lambda2")) == "lambda_{2}"
+
+
 def test_sym_pretty_no_conj():
     """real=True 参数根除 conj (MATLAB 5 条 strrep 的替代)."""
     t, kx = param("t"), param("kx")

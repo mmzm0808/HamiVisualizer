@@ -25,6 +25,8 @@ class HoppingTerm:
     phase:       相位值 (弧度数值或 sympy.Symbol)
     phase_sign:  +1/−1, 该键 from 端的相位符号: e^{i·phase_sign·phase}
     applies_to:  预留 (README §4.2), MVP 不用
+    label_expression: 可选的未代入参数表达式，仅用于智能矩阵标签来源追踪；
+                      不参与数值建阵或模型持久化。
     """
 
     name: str
@@ -36,6 +38,7 @@ class HoppingTerm:
     phase: Any = 0.0
     phase_sign: int = 1
     applies_to: Any = None
+    label_expression: Any = None
 
     def __post_init__(self) -> None:
         for field_name, value in (("from_site", self.from_site), ("to_site", self.to_site)):

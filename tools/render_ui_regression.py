@@ -137,6 +137,10 @@ def main() -> int:
     )
     parser.add_argument("--bond-ratio-demo", action="store_true")
     parser.add_argument(
+        "--named-smart-demo", action="store_true",
+        help="Render smart matrix labels for distinct t1/t2 parameters.",
+    )
+    parser.add_argument(
         "--oblique-a1-demo", action="store_true",
         help="Render a honeycomb-like edit view with a vertical a1 component.",
     )
@@ -422,6 +426,15 @@ def main() -> int:
         window.panel.set_hopping_strength(0, 1.2)
         window.panel.set_hopping_strength(1, 0.3)
         window.panel.set_hopping_strength(2, 0.3)
+        controller.rebuild()
+    if args.named_smart_demo:
+        params = window.panel.get_params()
+        if not {"t1", "t2"}.issubset(params):
+            raise ValueError("named smart demo requires a t1/t2 model such as SSH")
+        params.update({"t1": 0.3, "t2": 1.0})
+        window.panel.set_params(params, force=True)
+        window.panel.set_symbolic(False)
+        window.panel.set_smart(True)
         controller.rebuild()
     window.panel.display_group.setExpanded(True)
     window.panel.sites_group.setExpanded(False)

@@ -135,7 +135,10 @@ def _canonical_rows(rows: Iterable, use_sympy: bool):
     normalized = []
     seen: dict[tuple, list[tuple[Any, bool]]] = {}
     reverse_duplicates = 0
-    for from_r, to_r, off, amp in rows:
+    for row in rows:
+        if len(row) < 4:
+            raise ValueError("跃迁行至少需要 from/to/offset/amplitude 四项")
+        from_r, to_r, off, amp, *metadata = row
         dx, dy = int(off[0]), int(off[1])
         reverse = dx < 0 or (dx == 0 and dy < 0) or (
             dx == 0 and dy == 0 and from_r > to_r
@@ -144,6 +147,11 @@ def _canonical_rows(rows: Iterable, use_sympy: bool):
             from_r, to_r = to_r, from_r
             dx, dy = -dx, -dy
             amp = _conj(amp, use_sympy)
+            if metadata and metadata[0] is not None:
+                # The first optional metadata field is the symbolic source
+                # expression used by smart labels.  It follows the same
+                # Hermitian orientation as the numerical amplitude.
+                metadata[0] = metadata[0].conjugate()
         key = (from_r, to_r, dx, dy)
         prior = seen.setdefault(key, [])
         if any(old_reverse != reverse and _amp_equal(old_amp, amp, use_sympy)
@@ -151,8 +159,18 @@ def _canonical_rows(rows: Iterable, use_sympy: bool):
             reverse_duplicates += 1
             continue
         prior.append((amp, reverse))
-        normalized.append((from_r, to_r, (dx, dy), amp))
+        normalized.append((from_r, to_r, (dx, dy), amp, *metadata))
     return normalized, reverse_duplicates
+
+
+def _add_provenance(acc: dict, key: tuple, expression) -> None:
+    """Accumulate a sparse label source, failing closed on missing pieces."""
+    if key in acc and acc[key] is None:
+        return
+    if expression is None:
+        acc[key] = None
+        return
+    acc[key] = acc.get(key, 0) + expression
 
 
 def _validate_onsite(amp: Any, use_sympy: bool) -> None:
@@ -184,7 +202,10 @@ def build_ribbon(spec: RibbonSpec, rows: Iterable, *, use_sympy: bool = False):
     canonical, reverse_duplicates = _canonical_rows(rows, use_sympy)
     if reverse_duplicates:
         stats["dedup_reverse"] += reverse_duplicates
-    for from_r, to_r, off, amp in canonical:
+    provenance: dict = {}
+    for row in canonical:
+        from_r, to_r, off, amp, *metadata = row
+        source = metadata[0] if metadata else None
         cs, dy = off
         for cy in range(spec.NY):
             i = logical.get((from_r, cy))
@@ -196,17 +217,35 @@ def build_ribbon(spec: RibbonSpec, rows: Iterable, *, use_sympy: bool = False):
                 if j == i:
                     _validate_onsite(amp, use_sympy)
                     acc0[(i, i)] = acc0.get((i, i), 0) + amp
+                    _add_provenance(provenance, (i, i, 0), source)
                 else:
                     acc0[(i, j)] = acc0.get((i, j), 0) + amp
                     acc0[(j, i)] = acc0.get((j, i), 0) + _conj(amp, use_sympy)
+                    _add_provenance(provenance, (i, j, 0), source)
+                    _add_provenance(
+                        provenance, (j, i, 0),
+                        None if source is None else source.conjugate(),
+                    )
             elif cs == 1:
                 acc1[(i, j)] = acc1.get((i, j), 0) + amp
+                _add_provenance(provenance, (i, j, 1), source)
+                _add_provenance(
+                    provenance, (j, i, -1),
+                    None if source is None else source.conjugate(),
+                )
             else:
                 stats["x_long_range"] += 1
                 extra[(cs, i, j)] = extra.get((cs, i, j), 0) + amp
+                _add_provenance(provenance, (i, j, cs), source)
+                _add_provenance(
+                    provenance, (j, i, -cs),
+                    None if source is None else source.conjugate(),
+                )
     H0 = _mat(acc0, Nat, use_sympy)
     H1 = _mat(acc1, Nat, use_sympy)
-    return RibbonHamiltonian(H0, H1, extra, basis, origin, keys, dict(stats))
+    return RibbonHamiltonian(
+        H0, H1, extra, basis, origin, keys, dict(stats), provenance,
+    )
 
 
 class RibbonHamiltonian:
@@ -224,6 +263,7 @@ class RibbonHamiltonian:
         origin=None,
         keys=None,
         stats: dict | None = None,
+        provenance: dict | None = None,
     ):
         self.H0 = H0
         self.H1 = H1
@@ -232,6 +272,7 @@ class RibbonHamiltonian:
         self.origin = origin
         self.keys = keys
         self.stats = stats or {}
+        self.provenance = provenance or {}
         self.Nat = H0.shape[0]
 
     def H(self, kx: float):

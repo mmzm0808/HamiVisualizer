@@ -109,6 +109,7 @@ class MatrixSceneData:
     mode: str = "smart"
     sites: tuple = ()
     formatter: Any = None
+    smart_labels: Any = None
     title: str = ""
     t: Any = None
     phi: Any = None

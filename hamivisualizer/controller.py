@@ -328,6 +328,7 @@ class ViewController(QObject):
         self._matrix_obj = None            # 符号/数值原始矩阵 (kx 快路径复用)
         self._mode = "smart"
         self._formatter = None
+        self._smart_labels = None          # 稀疏参数来源标签；kx 快路径直接复用
         self._lam: tuple | None = None     # lambdify 缓存: (names, matrix, func)
         self._fit_seen: dict = {}
         self._generation = 0
@@ -519,6 +520,12 @@ class ViewController(QObject):
             else:
                 amp = self._eval_num(h["amplitude"], params)
                 ph = self._eval_num(h["phase"], params) if pm == "phase" else 0.0
+            label_expression = self._eval_sym(h["amplitude"])
+            if pm == "phase":
+                label_phase = self._eval_sym(h["phase"])
+                label_expression *= sp.exp(
+                    sp.I * int(h["phase_sign"]) * label_phase
+                )
             hops.append(HoppingTerm(
                 name=h["name"],
                 from_site=h["from_site"],
@@ -528,6 +535,7 @@ class ViewController(QObject):
                 phase_mode=pm,
                 phase=ph,
                 phase_sign=h["phase_sign"],
+                label_expression=label_expression,
             ))
         return hops
 
@@ -979,6 +987,7 @@ class ViewController(QObject):
                 mode=mode,
                 sites=_display_matrix_labels(res, boundary),
                 formatter=self._formatter if mode == "smart" else None,
+                smart_labels=self._smart_labels if mode == "smart" else None,
                 t=params.get("t"), phi=params.get("phi"),
                 title=self._matrix_title(res, boundary, mode, kx),
             ))
@@ -1024,6 +1033,9 @@ class ViewController(QObject):
             ElementFormatter(t=params.get("t", 1.0), phi=params.get("phi"), omg=params.get("omg"))
             if mode == "smart" else None
         )
+        self._smart_labels = (
+            res.smart_label_expressions(params) if mode == "smart" else None
+        )
         self.window.matrix_scene.set_data(MatrixSceneData(
             n=res.Nat,
             values=np.asarray(vals, dtype=complex),
@@ -1031,6 +1043,7 @@ class ViewController(QObject):
             mode=mode,
             sites=_display_matrix_labels(res, boundary),
             formatter=self._formatter,
+            smart_labels=self._smart_labels,
             t=params.get("t"), phi=params.get("phi"),
             title=self._matrix_title(res, boundary, mode, kx),
         ))

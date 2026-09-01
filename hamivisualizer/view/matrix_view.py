@@ -324,6 +324,8 @@ class MatrixView(QGraphicsScene):
             expression = sym_pretty(raw) if raw != 0 else "0"
         elif data.mode == "numeric":
             expression = format_elem(data.values[row, col], "numeric")
+        elif data.smart_labels and (row, col) in data.smart_labels:
+            expression = sym_pretty(data.smart_labels[(row, col)])
         elif isinstance(raw, sp.Basic) and any(
             getattr(s, "name", str(s)) in {"kx", "k_x"}
             for s in raw.free_symbols
@@ -680,6 +682,8 @@ class MatrixView(QGraphicsScene):
             value = format_elem(raw, "symbolic")
         elif data.mode == "numeric":
             value = format_elem(data.values[i, j], "numeric")
+        elif data.smart_labels and (i, j) in data.smart_labels:
+            value = sym_pretty(data.smart_labels[(i, j)])
         elif isinstance(raw, sp.Basic) and any(
             getattr(s, "name", str(s)) in {"kx", "k_x"}
             for s in raw.free_symbols

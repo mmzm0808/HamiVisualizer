@@ -18,6 +18,7 @@ from .lattice import Lattice
 from .ribbon import (
     RibbonSpec,
     build_ribbon,
+    _add_provenance,
     _canonical_rows,
     _conj,
     _mat,
@@ -118,6 +119,79 @@ class HResult:
             matrix[j, i] += np.conj(value * harmonic)
         return matrix
 
+    def smart_label_expressions(self, params: dict) -> dict[tuple[int, int], sp.Expr]:
+        """Return exact sparse smart labels, validated against numeric data.
+
+        Provenance is recorded per matrix cell and Bloch harmonic while the
+        numerical Hamiltonian is assembled.  A cell is exposed only when all
+        of its contributions have a source expression and every harmonic
+        evaluates back to the stored numerical coefficient.  Any mismatch is
+        fail-closed: the view falls back to the ordinary numeric formatter.
+        """
+        if not isinstance(self.provenance, dict) or not self.provenance:
+            return {}
+        substitutions = {
+            sp.Symbol(str(name), real=True): value
+            for name, value in params.items()
+        }
+        grouped: dict[tuple[int, int], sp.Expr] = {}
+        invalid: set[tuple[int, int]] = set()
+        kx = sp.Symbol("kx", real=True)
+
+        def numerical_coefficient(i: int, j: int, harmonic: int):
+            if self.H is not None:
+                return self.H[i, j] if harmonic == 0 else None
+            if harmonic == 0:
+                return self.blocks["H0"][i, j]
+            if harmonic == 1:
+                return self.blocks["H1"][i, j]
+            if harmonic == -1:
+                return np.conj(self.blocks["H1"][j, i])
+            if harmonic > 1:
+                return self.extra.get((harmonic, i, j))
+            reverse_key = (-harmonic, j, i)
+            return (
+                np.conj(self.extra[reverse_key])
+                if reverse_key in self.extra else None
+            )
+
+        for key, expression in self.provenance.items():
+            try:
+                i, j, harmonic = map(int, key)
+            except (TypeError, ValueError):
+                continue
+            cell = (i, j)
+            if expression is None:
+                invalid.add(cell)
+                continue
+            expected = numerical_coefficient(i, j, harmonic)
+            if expected is None:
+                invalid.add(cell)
+                continue
+            try:
+                evaluated = complex(sp.N(sp.sympify(expression).subs(substitutions)))
+                target = complex(expected)
+            except (TypeError, ValueError, OverflowError):
+                invalid.add(cell)
+                continue
+            if not np.isfinite(evaluated.real) or not np.isfinite(evaluated.imag):
+                invalid.add(cell)
+                continue
+            if not np.isclose(evaluated, target, rtol=1e-9, atol=1e-10):
+                invalid.add(cell)
+                continue
+            term = sp.sympify(expression)
+            if harmonic:
+                term *= sp.exp(sp.I * harmonic * kx)
+            grouped[cell] = grouped.get(cell, 0) + term
+        for cell in invalid:
+            grouped.pop(cell, None)
+        return {
+            cell: sp.simplify(expression)
+            for cell, expression in grouped.items()
+            if expression != 0
+        }
+
 
 class HamiltonianBuilder:
     """把任意自定义晶格 (Lattice + [HoppingTerm]) 建成哈密顿量.
@@ -168,7 +242,10 @@ class HamiltonianBuilder:
         build_ribbon 只见复数/符号表达式。
         """
         for h in self.hops:
-            yield (h.from_site, h.to_site, h.cell_offset, h.evaluate())
+            yield (
+                h.from_site, h.to_site, h.cell_offset, h.evaluate(),
+                h.label_expression,
+            )
 
     def _uses_symbols(self) -> bool:
         """任一跃迁含符号参数 (amplitude/phase 为 sympy.Basic) 即走符号模式."""
@@ -209,6 +286,7 @@ class HamiltonianBuilder:
             smap=smap,
             positions=positions,
             origin=rb.origin,
+            provenance=dict(rb.provenance),
             labels=tuple(f"{cy}:{r}" for r, cy in rb.origin),
         )
 
@@ -236,12 +314,19 @@ class HamiltonianBuilder:
         acc: dict = {}
         skipped: dict = {}
         evaluated = [
-            (h.from_site, h.to_site, h.cell_offset, h.evaluate()) for h in self.hops
+            (
+                h.from_site, h.to_site, h.cell_offset, h.evaluate(),
+                h.label_expression,
+            )
+            for h in self.hops
         ]
         canonical, reverse_duplicates = _canonical_rows(evaluated, use_sympy)
         if reverse_duplicates:
             skipped["dedup_reverse"] = reverse_duplicates
-        for from_site, to_site, offset, amp in canonical:
+        provenance: dict = {}
+        for row in canonical:
+            from_site, to_site, offset, amp, *metadata = row
+            source = metadata[0] if metadata else None
             for cx, cy in active_cells:
                 i = ix(cx, cy, from_site)
                 tx, ty = cx + offset[0], cy + offset[1]
@@ -252,9 +337,15 @@ class HamiltonianBuilder:
                 if j == i:
                     _validate_onsite(amp, use_sympy)
                     acc[(i, i)] = acc.get((i, i), 0) + amp  # on-site / 自键
+                    _add_provenance(provenance, (i, i, 0), source)
                 else:
                     acc[(i, j)] = acc.get((i, j), 0) + amp
                     acc[(j, i)] = acc.get((j, i), 0) + _conj(amp, use_sympy)
+                    _add_provenance(provenance, (i, j, 0), source)
+                    _add_provenance(
+                        provenance, (j, i, 0),
+                        None if source is None else source.conjugate(),
+                    )
         H = _mat(acc, Nat, use_sympy)
         positions = [lat.position(*c) for c in ix.rmap]
         return HResult(
@@ -267,6 +358,7 @@ class HamiltonianBuilder:
             smap=ix.smap,
             rmap=ix.rmap,
             positions=positions,
+            provenance=provenance,
             labels=tuple(f"{cx},{cy}:{r}" for cx, cy, r in ix.rmap),
         )
 

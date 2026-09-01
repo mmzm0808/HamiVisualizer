@@ -1179,6 +1179,25 @@ class LatticeView(QGraphicsScene):
             value = f"{float(hop.get('strength', 1.0)):.8g}"
         except (TypeError, ValueError):
             value = str(hop.get("strength", ""))
+        # A bare number is not enough in a dense Kagome/honeycomb view: two
+        # bonds can meet at one junction and several parameter families can
+        # share the same geometric segment.  Keep the preview compact, but
+        # expose the same one-based identity that the persistent editor uses.
+        try:
+            from_label = int(hop.get("from_site", 0)) + 1
+            to_label = int(hop.get("to_site", 0)) + 1
+            off_x = int(hop.get("off_x", 0))
+            off_y = int(hop.get("off_y", 0))
+            relation = (
+                "内" if (off_x == 0 and off_y == 0)
+                else f"外 {off_x:+d},{off_y:+d}"
+            )
+            identity = f"#{int(row) + 1} · {from_label}→{to_label} · {relation}"
+            parameter_name = str(hop.get("name", "")).strip()
+            if parameter_name and parameter_name != "t":
+                identity += f" · {parameter_name}"
+        except (TypeError, ValueError):
+            identity = f"#{int(row) + 1}"
         preview = self._hover_hop_label
         if preview is None or preview.scene() is not self:
             preview = QGraphicsTextItem()
@@ -1187,7 +1206,7 @@ class LatticeView(QGraphicsScene):
         if background is None or background.scene() is not self:
             background = QGraphicsRectItem()
             self.addItem(background)
-        preview.setPlainText(value)
+        preview.setPlainText(f"{identity}\n{value}")
         font = QFont("Segoe UI")
         font.setPointSizeF(9.0)
         font.setBold(True)
@@ -1197,7 +1216,9 @@ class LatticeView(QGraphicsScene):
         preview.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
         preview.setZValue(27)
         preview.setData(0, "hopping-hover-coefficient")
-        preview.setToolTip(f"跃迁 {int(row) + 1} 系数；点击线条后可编辑")
+        preview.setToolTip(
+            f"{identity}；系数 {value}；点击线条后可编辑"
+        )
         # A small pill-shaped background makes the transient value discoverable
         # on both themes without turning it into another interactive widget.
         # It shares the fixed-pixel transform and never accepts mouse input,

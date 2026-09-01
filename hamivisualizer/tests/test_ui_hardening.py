@@ -2852,6 +2852,34 @@ def test_bond_hover_uses_one_stable_pixel_target_without_guide_flash():
     assert next(guide for guide in guides if guide.row == second_row).pen().color().alpha() > 0
 
 
+def test_bond_hover_preview_includes_identity_and_coefficient():
+    """The transient hover card identifies the exact bond before a click."""
+    _app, win, ctrl = _window()
+    ctrl.apply_document(template_document(
+        "SSH", connectivity="最近邻", boundary_kind="semi", nx=4, ny=4,
+    ))
+    win.resize(1200, 800)
+    win.show()
+    QApplication.processEvents()
+    win.lattice_mode_btn.setChecked(True)
+    ctrl.fit_all(force=True)
+    QApplication.processEvents()
+
+    scene = win.lattice_scene
+    guides = list(scene._edit_guides)
+    assert guides
+    row = int(guides[0].row)
+    scene._set_hovered_hop_row(row)
+    QApplication.processEvents()
+    preview = scene._hover_hop_label
+    assert preview is not None and preview.isVisible()
+    text = preview.toPlainText()
+    assert text.startswith(f"#{row + 1} · ")
+    assert "→" in text
+    assert "\n" in text
+    assert text.splitlines()[-1]
+
+
 def test_clicked_hop_editor_follows_selected_bond_and_explains_identity():
     """Switching bonds moves the sole field and updates its identity chip."""
     _app, win, ctrl = _window()
@@ -2942,7 +2970,9 @@ def test_hovering_bond_shows_transient_coefficient_without_prebuilding_editors()
     preview = [item for item in scene.items()
                if item.data(0) == "hopping-hover-coefficient"]
     assert len(preview) == 1
-    assert preview[0].toPlainText() == "2.5"
+    preview_text = preview[0].toPlainText()
+    assert preview_text.startswith("#1 · 1→2 · 内")
+    assert preview_text.splitlines()[-1] == "2.5"
     badge_background = [item for item in scene.items()
                         if item.data(0) == "hopping-hover-coefficient-bg"]
     assert len(badge_background) == 1
